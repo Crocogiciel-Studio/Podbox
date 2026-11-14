@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -72,17 +73,18 @@ var worktreeChurn = map[string]bool{"locked": true, "commondir": true, "gitdir":
 // directory, in .git or in a submodule git directory under .git/modules.
 var worktreeFile = regexp.MustCompile(`(^|/)worktrees/[^/]+/(commondir|gitdir|config\.worktree)$`)
 
-// worktreeDir reports a linked worktree's git directory: <gitdir>/worktrees/<name>.
-func worktreeDir(root, fp string) bool {
-	parent := filepath.Dir(fp)
-	if filepath.Base(parent) != "worktrees" {
+// worktreeDir reports a linked worktree's git directory:
+// <gitdir>/worktrees/<name>, rel being relative to .git (opened as g).
+func worktreeDir(g *os.Root, rel string) bool {
+	parent := path.Dir(rel)
+	if path.Base(parent) != "worktrees" {
 		return false
 	}
-	gd := filepath.Dir(parent)
-	if gd == root {
+	gd := path.Dir(parent)
+	if gd == "." {
 		return true
 	}
-	fi, err := os.Lstat(filepath.Join(gd, "HEAD"))
+	fi, err := Lstat(g, gd+"/HEAD")
 	return err == nil && fi.Mode().IsRegular()
 }
 
@@ -160,44 +162,61 @@ func why(rel string) string {
 	return ""
 }
 
-// FingerprintGit records the .git of workspace ws and its hook files.
+// maxGitFile caps the bytes hashed of one watched git file; a larger one
+// is recorded as Oversized and always reported.
+const maxGitFile = 1 << 20
+
+// maxTodo caps the rebase todo read; a larger one counts as pending exec.
+const maxTodo = 8 << 20
+
+// FingerprintGit records the .git of workspace ws and its hook files. It
+// reads ws through an os.Root and never follows a symbolic link.
 func FingerprintGit(ws string) (GitPrint, error) {
-	p, err := fingerprintGitDir(ws)
-	p.Hooks = FingerprintHooks(ws)
+	r, err := os.OpenRoot(ws)
+	if err != nil {
+		return GitPrint{}, err
+	}
+	defer r.Close()
+	p, err := fingerprintGitDir(r)
+	p.Hooks = fingerprintHooks(r)
 	return p, err
 }
 
-func fingerprintGitDir(ws string) (GitPrint, error) {
-	root := filepath.Join(ws, ".git")
-	fi, err := os.Lstat(root)
+func fingerprintGitDir(r *os.Root) (GitPrint, error) {
+	fi, err := r.Lstat(".git")
 	switch {
-	case os.IsNotExist(err):
+	case errors.Is(err, fs.ErrNotExist):
 		return GitPrint{Kind: "none"}, nil
 	case err != nil:
 		return GitPrint{}, err
 	case fi.Mode()&fs.ModeSymlink != 0:
 		return GitPrint{Kind: "symlink"}, nil
 	case fi.Mode().IsRegular():
-		sum, err := hashFile(root)
+		sum, err := HashFile(r, ".git", maxGitFile)
 		return GitPrint{Kind: "file", Pointer: sum}, err
 	case !fi.IsDir():
 		return GitPrint{Kind: "other"}, nil
 	}
 	p := GitPrint{Kind: "dir", Files: map[string]string{}, Links: map[string]string{}}
-	entries, err := os.ReadDir(root)
+	g, err := OpenDir(r, ".git")
+	if err != nil {
+		return p, err
+	}
+	defer g.Close()
+	gfs := g.FS()
+	entries, err := fs.ReadDir(gfs, ".")
 	if err != nil {
 		return p, err
 	}
 	for _, e := range entries {
 		p.Entries = append(p.Entries, e.Name())
 	}
-	err = filepath.WalkDir(root, func(fp string, d fs.DirEntry, err error) error {
-		if err != nil || fp == root {
+	err = fs.WalkDir(gfs, ".", func(rel string, d fs.DirEntry, err error) error {
+		if err != nil || rel == "." {
 			return nil // unreadable entries are unreadable to host git too
 		}
-		rel := filepath.ToSlash(mustRel(root, fp))
-		if d.IsDir() && worktreeDir(root, fp) {
-			if es, err := os.ReadDir(fp); err == nil {
+		if d.IsDir() && worktreeDir(g, rel) {
+			if es, err := fs.ReadDir(gfs, rel); err == nil {
 				for _, e := range es {
 					p.Entries = append(p.Entries, rel+"/"+e.Name())
 				}
@@ -205,15 +224,15 @@ func fingerprintGitDir(ws string) (GitPrint, error) {
 		}
 		switch {
 		case d.Name() == "git-rebase-todo" && path.Base(path.Dir(rel)) == "rebase-merge":
-			if pendingExec(fp) {
+			if pendingExec(g, rel) {
 				p.PendingExec = append(p.PendingExec, rel)
 			}
 		case d.Type()&fs.ModeSymlink != 0:
-			if t, err := os.Readlink(fp); err == nil {
+			if t, err := g.Readlink(rel); err == nil {
 				p.Links[rel] = t
 			}
 		case d.Type().IsRegular() && why(rel) != "":
-			if sum, err := hashFile(fp); err == nil {
+			if sum, err := HashFile(g, rel, maxGitFile); err == nil {
 				p.Files[rel] = sum
 			}
 		}
@@ -222,22 +241,17 @@ func fingerprintGitDir(ws string) (GitPrint, error) {
 	return p, err
 }
 
-func hashFile(p string) (string, error) {
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return "", err
-	}
-	s := sha256.Sum256(b)
-	return hex.EncodeToString(s[:]), nil
-}
-
 // pendingExec reports exec lines that `git rebase --continue` would run.
-func pendingExec(todo string) bool {
-	b, err := os.ReadFile(todo)
+func pendingExec(g *os.Root, todo string) bool {
+	b, err := ReadFile(g, todo, maxTodo)
+	if errors.Is(err, ErrTooLarge) {
+		return true // unchecked: reported
+	}
 	if err != nil {
 		return false
 	}
 	sc := bufio.NewScanner(bytes.NewReader(b))
+	sc.Buffer(nil, maxTodo)
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
 		if len(f) > 0 && (f[0] == "x" || f[0] == "exec") {
@@ -272,7 +286,9 @@ func diffGitDir(old, cur GitPrint) []GitFinding {
 		add("", reason)
 		return out
 	}
-	if cur.Kind == "file" && old.Pointer != cur.Pointer {
+	if cur.Kind == "file" && cur.Pointer == Oversized {
+		add("", oversized)
+	} else if cur.Kind == "file" && old.Pointer != cur.Pointer {
 		add("", "changed: this pointer sends git on the host to another git directory")
 	}
 	if cur.Kind != "dir" {
@@ -280,6 +296,11 @@ func diffGitDir(old, cur GitPrint) []GitFinding {
 	}
 	seen := map[string]bool{}
 	for rel, sum := range cur.Files {
+		if sum == Oversized {
+			add(rel, oversized+": "+why(rel))
+			seen[rel] = true
+			continue
+		}
 		if prev, ok := old.Files[rel]; !ok && !newWorktreeFile(old, rel, sum) || ok && prev != sum {
 			add(rel, changeVerb(ok)+": "+why(rel))
 			seen[rel] = true
@@ -317,6 +338,9 @@ func diffGitDir(old, cur GitPrint) []GitFinding {
 	}
 	return out
 }
+
+// oversized explains a watched file podbox did not hash.
+const oversized = "oversized (over 1 MiB): podbox did not read it through; review it"
 
 func changeVerb(existed bool) string {
 	if existed {

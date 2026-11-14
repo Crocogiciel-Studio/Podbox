@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
+	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
@@ -38,25 +40,50 @@ func (s Store) projectFiles(name string) []projectFile {
 	return []projectFile{{ProjectPolicyRel, s.ProjectPolicyPath(name)}, {workspace.IgnoreFile, s.ProjectIgnorePath(name)}}
 }
 
-// readLive reads a workspace file, refusing symlinks anywhere below the
-// workspace so the agent cannot point podbox at another host file.
+// maxProjectFile caps the project files podbox reads.
+const maxProjectFile = 1 << 20
+
+// readLive reads a workspace file through an os.Root, refusing symbolic
+// links anywhere below the workspace so the agent cannot point podbox at
+// another host file.
 func readLive(ws, rel string) ([]byte, bool, error) {
-	p := ws
-	for _, part := range strings.Split(rel, "/") {
-		p = filepath.Join(p, part)
-		fi, err := os.Lstat(p)
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, false, nil
-		}
-		if err != nil {
-			return nil, false, err
-		}
-		if fi.Mode()&fs.ModeSymlink != 0 {
-			return nil, false, fmt.Errorf("%s is a symbolic link; ignored", rel)
-		}
+	r, err := os.OpenRoot(ws)
+	if err != nil {
+		return nil, false, err
 	}
-	b, err := os.ReadFile(p)
-	return b, err == nil, err
+	defer r.Close()
+	b, err := workspace.ReadFile(r, rel, maxProjectFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("%s ignored: %w", rel, err)
+	}
+	return b, true, nil
+}
+
+// SetProjectRule records a rule in the workspace's .podbox/policy.yaml
+// through an os.Root: .podbox and policy.yaml must be a plain directory and
+// a regular file (or absent), never a symbolic link, and the file is
+// replaced atomically inside the workspace. It edits only that file.
+func SetProjectRule(ws, host string, allow bool, ports []int) error {
+	r, err := os.OpenRoot(ws)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	b, err := workspace.ReadFile(r, ProjectPolicyRel, maxProjectFile)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("refusing to write %s: %w", ProjectPolicyRel, err)
+	}
+	out, err := policy.EditRule(b, host, allow, ports)
+	if err != nil {
+		return fmt.Errorf("%s: %w", ProjectPolicyRel, err)
+	}
+	if err := workspace.WriteFile(r, ProjectPolicyRel, out); err != nil {
+		return fmt.Errorf("refusing to write %s: %w", ProjectPolicyRel, err)
+	}
+	return nil
 }
 
 func readSnap(path string) ([]byte, bool, error) {
@@ -197,20 +224,20 @@ func diff(a, b []string) (added, removed []string) {
 
 // readOnlyProject lists the existing project paths to mount read-only in the
 // agent; symlinks are skipped so nothing outside the workspace is exposed.
-func readOnlyProject(ws string) []string {
+func readOnlyProject(r *os.Root) []string {
 	var out []string
 	for _, rel := range projectDirs {
-		if fi, err := os.Lstat(filepath.Join(ws, rel)); err == nil && fi.Mode()&fs.ModeSymlink == 0 {
+		if fi, err := workspace.Lstat(r, rel); err == nil && fi.Mode()&fs.ModeSymlink == 0 {
 			out = append(out, rel)
 		}
 	}
 	// .git/config can name hooks, fsmonitor or filter commands that the
 	// host's git would run; objects, refs, index and HEAD stay writable.
-	if gitDir(ws) {
-		if fi, err := os.Lstat(filepath.Join(ws, gitConfig)); err == nil && fi.Mode().IsRegular() {
+	if gitDir(r) {
+		if fi, err := workspace.Lstat(r, gitConfig); err == nil && fi.Mode().IsRegular() {
 			out = append(out, gitConfig)
 		}
-		out = append(out, hookDirs(ws)...)
+		out = append(out, hookDirs(r)...)
 	}
 	return out
 }
@@ -219,22 +246,27 @@ func readOnlyProject(ws string) []string {
 // git directories under .git/modules, so hooks run for the agent's commits
 // but cannot be changed. Absent ones are not created: one the agent creates
 // is reported by the integrity check.
-func hookDirs(ws string) []string {
+func hookDirs(r *os.Root) []string {
 	var out []string
-	isDir := func(p string) bool { fi, err := os.Lstat(p); return err == nil && fi.IsDir() }
-	if isDir(filepath.Join(ws, ".git", "hooks")) {
+	isDir := func(rel string) bool { fi, err := workspace.Lstat(r, rel); return err == nil && fi.IsDir() }
+	if isDir(".git/hooks") {
 		out = append(out, ".git/hooks")
 	}
-	_ = filepath.WalkDir(filepath.Join(ws, ".git", "modules"), func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
+	mods, err := workspace.OpenDir(r, ".git/modules")
+	if err != nil {
+		return out
+	}
+	defer mods.Close()
+	_ = fs.WalkDir(mods.FS(), ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() || p == "." {
 			return nil
 		}
-		if fi, err := os.Lstat(filepath.Join(filepath.Dir(p), "HEAD")); err != nil || !fi.Mode().IsRegular() {
+		if fi, err := workspace.Lstat(mods, path.Join(path.Dir(p), "HEAD")); err != nil || !fi.Mode().IsRegular() {
 			return nil // not inside a git directory: a path segment of a submodule name
 		}
 		switch d.Name() { // inside a submodule git directory: only hooks and nested modules matter
 		case "hooks":
-			out = append(out, filepath.ToSlash(mustRel(ws, p)))
+			out = append(out, ".git/modules/"+p)
 			return fs.SkipDir
 		case "modules":
 			return nil
@@ -244,25 +276,37 @@ func hookDirs(ws string) []string {
 	return out
 }
 
-func mustRel(root, p string) string {
-	r, err := filepath.Rel(root, p)
-	if err != nil {
-		return p
-	}
-	return r
-}
-
 const gitConfig = ".git/config"
 
 // gitDir reports a real .git directory (not a symlink).
-func gitDir(ws string) bool {
-	fi, err := os.Lstat(filepath.Join(ws, ".git"))
+func gitDir(r *os.Root) bool {
+	fi, err := r.Lstat(".git")
 	return err == nil && fi.IsDir()
 }
 
 // gitPointer reports a .git file (worktree or submodule): its git directory
 // lies outside the workspace and is not protected.
-func gitPointer(ws string) bool {
-	fi, err := os.Lstat(filepath.Join(ws, ".git"))
+func gitPointer(r *os.Root) bool {
+	fi, err := r.Lstat(".git")
 	return err == nil && fi.Mode().IsRegular()
+}
+
+// checkMounts re-validates, right before the container is created, every
+// bind source inside the workspace: each component below the workspace must
+// be a plain directory, and the source a directory or regular file, never a
+// symbolic link (podman would follow it on the host).
+func checkMounts(r *os.Root, ws string, ms []runtime.Mount) error {
+	for _, mt := range ms {
+		if mt.Type != runtime.Bind {
+			continue
+		}
+		rel, err := filepath.Rel(ws, mt.Source)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			continue // outside the workspace: podbox's own state, /dev/null
+		}
+		if err := workspace.Check(r, filepath.ToSlash(rel)); err != nil {
+			return fmt.Errorf("refusing to mount %s: %w", mt.Source, err)
+		}
+	}
+	return nil
 }

@@ -4,8 +4,8 @@ package workspace
 import (
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -77,7 +77,8 @@ func Matcher(ignore []byte) func(rel string, dir bool) bool {
 
 type fileKey struct{ dev, ino uint64 }
 
-// Resolve walks root once and returns what to mask: what the patterns match
+// Resolve walks root once, through an os.Root and without following
+// symbolic links, and returns what to mask: what the patterns match
 // now, and every recorded path wherever it now lives (same device and
 // inode) or still at its recorded path. ignore is the .sandboxignore
 // content to apply (the host-side snapshot, never the live workspace file).
@@ -104,17 +105,21 @@ func Resolve(root string, ignore []byte, tracked []Tracked) (Result, error) {
 	// identity (replaced on the host, e.g. an editor's save) only otherwise.
 	byIDPlaced := make([]bool, len(res.Tracked))
 	newID := make([]fileKey, len(res.Tracked))
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return res, err
+	}
+	defer r.Close()
+	err = fs.WalkDir(r.FS(), ".", func(rel string, d fs.DirEntry, err error) error {
 		if err != nil {
-			if p == root {
+			if rel == "." {
 				return err
 			}
 			return nil // unreadable entries are invisible to the agent too
 		}
-		if p == root {
+		if rel == "." {
 			return nil
 		}
-		rel := filepath.ToSlash(mustRel(root, p))
 		if d.Type()&fs.ModeSymlink != 0 {
 			return nil // a link carries no content; its target is masked or absent
 		}
@@ -149,7 +154,7 @@ func Resolve(root string, ignore []byte, tracked []Tracked) (Result, error) {
 			res.Tracked = append(res.Tracked, t)
 		default:
 			if !dir {
-				if why := looksSecret(p, d); why != "" {
+				if why := looksSecret(r, rel, d); why != "" {
 					res.Warnings = append(res.Warnings, fmt.Sprintf("%s %s and is not masked; add it to %s and run podbox policy reload to hide it", rel, why, IgnoreFile))
 				}
 			}
@@ -219,12 +224,4 @@ func Shrink(res Result, ignore []byte) (kept []Tracked, dropped []string) {
 		}
 	}
 	return kept, dropped
-}
-
-func mustRel(root, p string) string {
-	r, err := filepath.Rel(root, p)
-	if err != nil {
-		return p
-	}
-	return r
 }

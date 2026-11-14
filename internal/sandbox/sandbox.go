@@ -196,7 +196,12 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 	for _, w := range res.Warnings {
 		m.Warn("%s", w)
 	}
-	if gitPointer(meta.Workspace) {
+	ws, err := os.OpenRoot(meta.Workspace)
+	if err != nil {
+		return err
+	}
+	defer ws.Close()
+	if gitPointer(ws) {
 		m.Warn(".git is a file (worktree or submodule): the hooks and config of the git directory it points to are not protected from the agent")
 	}
 	var limits *runtime.Limits
@@ -209,10 +214,14 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 	if err := os.MkdirAll(m.Store.EmptyDir(meta.Name), 0o755); err != nil {
 		return err
 	}
-	return m.RT.ContainerCreate(ctx, agentSpec(agentInput{
-		Meta: meta, Image: ref, ProxyIP: ip, ReadOnly: readOnlyProject(meta.Workspace), GitDir: gitDir(meta.Workspace), Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name),
+	spec := agentSpec(agentInput{
+		Meta: meta, Image: ref, ProxyIP: ip, ReadOnly: readOnlyProject(ws), GitDir: gitDir(ws), Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name),
 		Limits: limits, SELinux: m.Info.SELinux, GOOS: m.GOOS,
-	}))
+	})
+	if err := checkMounts(ws, meta.Workspace, spec.Mounts); err != nil {
+		return err
+	}
+	return m.RT.ContainerCreate(ctx, spec)
 }
 
 // Start (re)creates stopped containers with current images, masks and

@@ -17,7 +17,7 @@ var (
 const maxScan = 64 << 10
 
 // looksSecret explains why a file looks sensitive, or returns "".
-func looksSecret(path string, d fs.DirEntry) string {
+func looksSecret(r *os.Root, rel string, d fs.DirEntry) string {
 	name := strings.ToLower(d.Name())
 	ext := filepath.Ext(name)
 	if secretExts[ext] {
@@ -37,7 +37,7 @@ func looksSecret(path string, d fs.DirEntry) string {
 	if err != nil || fi.Size() > maxScan {
 		return "is named like a secret"
 	}
-	b, err := os.ReadFile(path)
+	b, err := ReadFile(r, rel, maxScan)
 	if err != nil {
 		return "is named like a secret"
 	}

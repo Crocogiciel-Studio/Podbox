@@ -98,11 +98,6 @@ type Sources struct {
 	Session string // <sandbox state>/session.yaml
 }
 
-// ProjectFile is the project layer path inside a workspace.
-func ProjectFile(workspace string) string {
-	return filepath.Join(workspace, ".podbox", "policy.yaml")
-}
-
 // Compile merges defaults, global, project and session layers.
 func Compile(s Sources) Effective {
 	e := Effective{Version: EffectiveVersion, Sandbox: s.Sandbox, Rules: Defaults(s.Agent)}
@@ -177,25 +172,33 @@ func ValidatePorts(ps []int) error {
 	return nil
 }
 
-// SetRule rewrites the layer at path so host has exactly one rule, limited
-// to ports when given. An existing invalid file is never overwritten.
+// SetRule rewrites the podbox-owned layer file at path (session or
+// snapshot, never a workspace file: see sandbox.SetProjectRule) so host has
+// exactly one rule. It only replaces that file, by rename.
 func SetRule(path, host string, allow bool, ports []int) error {
-	if err := ValidatePattern(host); err != nil {
+	b, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
+	}
+	out, err := EditRule(b, host, allow, ports)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return WriteAtomic(path, out)
+}
+
+// EditRule returns layer content b (nil: empty) with exactly one rule for
+// host, limited to ports when given. Invalid content is never rewritten.
+func EditRule(b []byte, host string, allow bool, ports []int) ([]byte, error) {
+	if err := ValidatePattern(host); err != nil {
+		return nil, err
 	}
 	if err := ValidatePorts(ports); err != nil {
-		return err
+		return nil, err
 	}
-	var f File
-	b, err := os.ReadFile(path)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-	case err != nil:
-		return err
-	default:
-		if f, _, err = Parse(b); err != nil {
-			return fmt.Errorf("%s is invalid, fix it first: %w", path, err)
-		}
+	f, _, err := Parse(b)
+	if err != nil {
+		return nil, fmt.Errorf("invalid, fix it first: %w", err)
 	}
 	h := NormalizeHost(host)
 	kept := f.Rules[:0]
@@ -208,9 +211,5 @@ func SetRule(path, host string, allow bool, ports []int) error {
 		kept = append(kept, r)
 	}
 	f.Rules = append(kept, FileRule{Host: h, Allow: &allow, AllowPrivate: allow && private, Ports: ports})
-	out, err := yaml.Marshal(f)
-	if err != nil {
-		return err
-	}
-	return WriteAtomic(path, out)
+	return yaml.Marshal(f)
 }

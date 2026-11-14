@@ -21,13 +21,22 @@ var hookFiles = []string{".githooks/", ".husky/", ".lefthook.yml", ".pre-commit-
 // maxHookFiles bounds the files hashed under hook directories.
 const maxHookFiles = 1000
 
+// maxHookFile caps the bytes hashed of one hook file; a larger one is
+// recorded as Oversized and always reported.
+const maxHookFile = 16 << 20
+
 // HookSources lists the existing worktree paths that define git hooks
 // (directories end with "/"), including core.hooksPath from .git/config when
 // it points inside the workspace, outside .git.
 func HookSources(ws string) []string {
+	r, err := os.OpenRoot(ws)
+	if err != nil {
+		return nil
+	}
+	defer r.Close()
 	var out []string
-	for _, rel := range hookCandidates(ws) {
-		if _, err := os.Lstat(filepath.Join(ws, filepath.FromSlash(strings.TrimSuffix(rel, "/")))); err != nil {
+	for _, rel := range hookCandidates(r, ws) {
+		if _, err := Lstat(r, strings.TrimSuffix(rel, "/")); err != nil {
 			continue
 		}
 		covered := false
@@ -43,9 +52,9 @@ func HookSources(ws string) []string {
 	return out
 }
 
-func hookCandidates(ws string) []string {
+func hookCandidates(r *os.Root, ws string) []string {
 	c := append([]string{}, hookFiles...)
-	if hp := hooksPath(ws); hp != "" {
+	if hp := hooksPath(r, ws); hp != "" {
 		c = append(c, hp+"/")
 	}
 	return c
@@ -53,18 +62,15 @@ func hookCandidates(ws string) []string {
 
 // hooksPath returns core.hooksPath from .git/config as a slash-separated
 // workspace-relative path, or "" when unset, outside the workspace or in .git.
-func hooksPath(ws string) string {
-	cfg := filepath.Join(ws, ".git", "config")
-	if fi, err := os.Lstat(cfg); err != nil || !fi.Mode().IsRegular() {
-		return ""
-	}
-	b, err := os.ReadFile(cfg)
+func hooksPath(r *os.Root, ws string) string {
+	b, err := ReadFile(r, ".git/config", maxGitFile)
 	if err != nil {
-		return ""
+		return "" // an oversized config is reported by the git fingerprint
 	}
 	v := ""
 	core := false
 	sc := bufio.NewScanner(bytes.NewReader(b))
+	sc.Buffer(nil, maxGitFile)
 	for sc.Scan() {
 		l := strings.TrimSpace(sc.Text())
 		if strings.HasPrefix(l, "[") {
@@ -97,26 +103,57 @@ func hooksPath(ws string) string {
 // FingerprintHooks maps every file under the hook sources to its sha256
 // ("link:<target>" for a symbolic link, never followed).
 func FingerprintHooks(ws string) map[string]string {
+	r, err := os.OpenRoot(ws)
+	if err != nil {
+		return map[string]string{}
+	}
+	defer r.Close()
+	return fingerprintHooks(r)
+}
+
+func fingerprintHooks(r *os.Root) map[string]string {
 	out := map[string]string{}
-	for _, rel := range hookCandidates(ws) {
-		root := filepath.Join(ws, filepath.FromSlash(strings.TrimSuffix(rel, "/")))
-		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	for _, src := range hookCandidates(r, r.Name()) {
+		src = strings.TrimSuffix(src, "/")
+		fi, err := Lstat(r, src)
+		switch {
+		case err != nil:
+			continue
+		case fi.Mode()&fs.ModeSymlink != 0:
+			if t, err := Readlink(r, src); err == nil {
+				out[src] = "link:" + t
+			}
+			continue
+		case fi.Mode().IsRegular():
+			if sum, err := HashFile(r, src, maxHookFile); err == nil {
+				out[src] = sum
+			}
+			continue
+		case !fi.IsDir():
+			continue
+		}
+		d, err := OpenDir(r, src)
+		if err != nil {
+			continue
+		}
+		_ = fs.WalkDir(d.FS(), ".", func(p string, e fs.DirEntry, err error) error {
 			if err != nil || len(out) >= maxHookFiles {
 				return nil
 			}
-			r := path.Clean(filepath.ToSlash(mustRel(ws, p)))
+			rel := path.Join(src, p)
 			switch {
-			case d.Type()&fs.ModeSymlink != 0:
-				if t, err := os.Readlink(p); err == nil {
-					out[r] = "link:" + t
+			case e.Type()&fs.ModeSymlink != 0:
+				if t, err := d.Readlink(p); err == nil {
+					out[rel] = "link:" + t
 				}
-			case d.Type().IsRegular():
-				if sum, err := hashFile(p); err == nil {
-					out[r] = sum
+			case e.Type().IsRegular():
+				if sum, err := HashFile(d, p, maxHookFile); err == nil {
+					out[rel] = sum
 				}
 			}
 			return nil
 		})
+		d.Close()
 	}
 	return out
 }
@@ -126,7 +163,9 @@ func diffHooks(old, cur map[string]string) []GitFinding {
 	const why = ": git runs it on your commits; review the diff before committing on the host"
 	var out []GitFinding
 	for rel, sum := range cur {
-		if prev, ok := old[rel]; !ok || prev != sum {
+		if sum == Oversized {
+			out = append(out, GitFinding{Path: rel, Reason: oversized + why, Hook: true})
+		} else if prev, ok := old[rel]; !ok || prev != sum {
 			out = append(out, GitFinding{Path: rel, Reason: changeVerb(ok) + why, Hook: true})
 		}
 	}

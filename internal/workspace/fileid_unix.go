@@ -15,3 +15,6 @@ func fileID(fi fs.FileInfo) (dev, ino uint64, ok bool) {
 	}
 	return uint64(st.Dev), uint64(st.Ino), true //nolint:unconvert // Dev is int32 on darwin
 }
+
+// nonBlock opens a FIFO swapped in for a checked file without blocking.
+const nonBlock = syscall.O_NONBLOCK

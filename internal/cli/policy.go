@@ -114,20 +114,21 @@ func (a *app) policySetCmd(verb string, allow bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var paths []string
+			var path string
 			switch scope {
 			case policy.LayerSession:
-				paths = []string{st.SessionPath(m.Name)}
+				path = st.SessionPath(m.Name)
 			case policy.LayerProject:
 				// The project file for the repository, the snapshot for enforcement.
-				paths = []string{policy.ProjectFile(m.Workspace), st.ProjectPolicyPath(m.Name)}
+				if err := sandbox.SetProjectRule(m.Workspace, args[1], allow, ports); err != nil {
+					return output.Wrap(output.ExitUsage, err, verb)
+				}
+				path = st.ProjectPolicyPath(m.Name)
 			default:
 				return output.Errorf(output.ExitUsage, "invalid --scope %q: want session or project", scope)
 			}
-			for _, p := range paths {
-				if err := policy.SetRule(p, args[1], allow, ports); err != nil {
-					return output.Wrap(output.ExitUsage, err, verb)
-				}
+			if err := policy.SetRule(path, args[1], allow, ports); err != nil {
+				return output.Wrap(output.ExitUsage, err, verb)
 			}
 			e, err := st.RefreshPolicy(m)
 			if err != nil {

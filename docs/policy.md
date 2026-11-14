@@ -51,10 +51,10 @@ Changes rewrite the effective file atomically; the running proxy applies them wi
 The agent can write the project, so podbox never trusts the live `.podbox/policy.yaml` or `.sandboxignore`. `create` copies both into the sandbox state directory; every later compilation (`policy allow|deny`, `start`) and mask computation uses that copy only. In the agent container both paths, when they exist, are mounted read-only.
 
 - `create` prints each rule and pattern it imports (`<name>: imported rule from .podbox/policy.yaml: allow example.com`, `<name>: imported .sandboxignore pattern: secrets/`) on stderr and lists them in `imported` (`rules`, `ignore`) in its JSON output: the agent of an earlier sandbox may have written these files.
-- `--scope project` writes the rule to the project file and to the snapshot, so the commit and the sandbox agree.
+- `--scope project` writes the rule to the project file and to the snapshot, so the commit and the sandbox agree. It edits only `.podbox/policy.yaml` in the project, replacing it atomically, and is refused (exit code 2, `unsafe workspace`, nothing written) when `.podbox` or `.podbox/policy.yaml` is a symbolic link or not a plain directory and regular file: an agent link to another directory (for example the podbox config) cannot make it rewrite another layer. A project allow never overrides a global deny.
 - After editing a project file by hand (or noticing the agent did), review it and run `podbox policy reload <sandbox>`. It prints added and removed rules (`+ rule allow example.com`) and ignore patterns (`- ignore secrets/`), then applies the policy at once; mask changes take effect at the next `stop` + `start`. It also forgets the recorded masks (see [masks follow their files](security-model.md#workspace-masking)) that no pattern matches any more, and the missing ones, printing each (`- mask config/prod.yaml (now config2/prod.yaml)`). `--output json` returns `rules_added`, `rules_removed`, `ignore_added`, `ignore_removed`, `masks_dropped`.
 - `podbox ls` and `policy show` warn when a project file differs from the snapshot; `ls -o json` lists them in `project_changed`.
-- A project file reached through a symbolic link is ignored with a warning.
+- A project file reached through a symbolic link (at any component) is ignored with a warning; podbox never follows workspace links on the host (see [workspace symbolic links](security-model.md#workspace-symbolic-links)).
 
 ## Defaults
 

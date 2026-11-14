@@ -247,6 +247,27 @@ rm -rf "$PROJ/.podbox" && echo 'notes.txt' >"$PROJ/.sandboxignore"
 pb policy reload "$NAME" >/dev/null 2>&1
 blocked "ls still warns after reload" ls_warns
 
+echo "== project policy reached through an agent symlink (F1)"
+# The agent links .podbox to the podbox config directory; policy allow
+# --scope project must not write through it (the global deny stays a deny).
+F1HOST=${E2E_F1_HOST:-example.net}
+GLOBAL=$PODBOX_HOME/config/policy.yaml
+mkdir -p "$PODBOX_HOME/config"
+printf 'rules:\n  - host: %s\n    allow: false\n' "$F1HOST" >"$GLOBAL"
+GLOBAL_SUM=$(sha256sum <"$GLOBAL")
+CONFIG_LS=$(ls -A "$PODBOX_HOME/config")
+pb stop "$NAME" >/dev/null 2>&1 && pb start "$NAME" >/dev/null 2>&1
+check "agent links .podbox to the podbox config directory" sx "$NAME" "ln -s '$PODBOX_HOME/config' '$PROJ/.podbox'"
+f1_refused() { local err; err=$(pb policy allow "$NAME" "$F1HOST" --scope project 2>&1 >/dev/null); [ $? -eq 2 ] && grep -q "symbolic link" <<<"$err"; }
+check "policy allow --scope project through the link refused (exit 2)" f1_refused
+check "global policy.yaml unchanged" test "$(sha256sum <"$GLOBAL")" = "$GLOBAL_SUM"
+check "no file written in the podbox config directory" test "$(ls -A "$PODBOX_HOME/config")" = "$CONFIG_LS"
+f1_log() { podman logs "podbox-$NAME-proxy" 2>&1 | grep "\"host\":\"$F1HOST\""; }
+f1_global_deny() { sx "$NAME" "curl -s -o /dev/null --max-time 10 http://$F1HOST/"; f1_log | grep '"decision":"deny"' | grep -q '"layer":"global"' && ! f1_log | grep -q '"decision":"allow"'; }
+check "global deny still decides" eventually 10 f1_global_deny
+rm -f "$PROJ/.podbox" "$GLOBAL"
+pb policy reload "$NAME" >/dev/null 2>&1
+
 echo "== corporate upstream proxy (allow-all, basic auth)"
 PROXY_IMG=$(pb image ls -o json | jq -r '[.[] | select(.image == "proxy")][0].ref')
 HOST_UPSTREAM=${HTTPS_PROXY:-${https_proxy:-}}

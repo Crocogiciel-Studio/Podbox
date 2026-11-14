@@ -33,6 +33,16 @@ Each decision is logged as one JSON line on the proxy's stdout (`podman logs pod
 
 Both sides are compared after resolving symbolic links, so a link to a refused directory is refused too. `start` checks again, so a workspace path later replaced by such a link is caught.
 
+## Workspace symbolic links
+
+The agent can create symbolic links anywhere in the project, pointing at any host path. podbox never follows one on the host: every host-side read, write, walk or check of project content (the project policy and `.sandboxignore`, `podbox policy allow|deny --scope project`, the mask walk and its secret scan, the git fingerprint, hook files, `.git/config`) goes through an `os.Root` opened on the workspace, which cannot resolve outside it, and refuses any symbolic link or special file on the way, so a link to another project path is refused too. Each directory step is checked to be the directory that was inspected, so a link swapped in meanwhile is refused.
+
+- Reading a project file through a link: ignored with a warning (the snapshot treats it as absent).
+- `--scope project` when `.podbox` or `.podbox/policy.yaml` is a link or not a plain directory and regular file: refused with exit code 2 (`unsafe workspace`), nothing written anywhere. The file is otherwise replaced atomically (temporary file and rename inside `.podbox`), so the write also never reaches another file through a hard link.
+- Walks list a link as a link (the git fingerprint and hook files record its target) and never descend into it.
+- Mount sources: right before the agent container is created, every bind source inside the workspace (the project, `.git`, `.git/config`, hook directories, `.podbox`, `.sandboxignore`) is checked again, component by component: a link or special file there makes `create` or `start` fail with exit code 2 instead of mounting it. podman resolves the source itself afterwards, so a window remains between this check and the mount (an agent in a second sandbox on the same workspace swapping a directory for a link); avoid running two sandboxes on one workspace with untrusted code.
+- Watched git files (`config`, `commondir`, `gitdir`, ...) are hashed as a stream up to 1 MiB, hook files up to 16 MiB; a larger file is not read through and is reported as `oversized` at every check.
+
 ## Workspace masking
 
 Forced, non-overridable patterns: `.env*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.kube/`, `.gnupg/`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `.docker/config.json`, and `.git/config` mounted read-only (it can name `core.hooksPath`, `core.fsmonitor` or filter commands that git on the host would run). `.git` is bound on itself so it cannot be renamed and replaced. `.git/hooks/` is read-only too (see [git hooks](#git-hooks)). Objects, refs, index and `HEAD` stay writable, so the agent can still commit; `git config` fails inside the sandbox. `.sandboxignore` adds patterns, read from the snapshot taken at `create` or `podbox policy reload`, so the agent cannot drop its own masks. Files are covered by a read-only bind of `/dev/null`, directories by a read-only bind of an empty directory (a tmpfs over a path inside a bind mount does not hide it). Uncovered files that look like secrets (name and entropy heuristic) produce a warning at start.
