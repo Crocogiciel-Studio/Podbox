@@ -22,6 +22,7 @@ type Runtime interface {
 	ImageExists(ctx context.Context, ref string) (bool, error)
 	ImageBuild(ctx context.Context, spec BuildSpec) error
 	ImageList(ctx context.Context, label string) ([]Image, error)
+	ImageRemove(ctx context.Context, ref string) error
 
 	VolumeCreate(ctx context.Context, name string, labels map[string]string) error
 	VolumeExists(ctx context.Context, name string) (bool, error)

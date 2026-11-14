@@ -191,7 +191,24 @@ func (b *Builder) Ensure(ctx context.Context, k Kind, force bool) (string, error
 	if err := b.RT.ImageBuild(ctx, spec); err != nil {
 		return "", fmt.Errorf("build %s: %w", k, err)
 	}
+	b.prune(ctx, k, ref)
 	return ref, nil
+}
+
+// prune removes older builds of k; images still in use or parents of
+// other images are refused by the engine and kept.
+func (b *Builder) prune(ctx context.Context, k Kind, keep string) {
+	imgs, err := b.RT.ImageList(ctx, LabelImage+"="+string(k))
+	if err != nil {
+		return
+	}
+	for _, im := range imgs {
+		for _, n := range im.Names {
+			if n != keep {
+				_ = b.RT.ImageRemove(ctx, n)
+			}
+		}
+	}
 }
 
 // Info is a built podbox image.

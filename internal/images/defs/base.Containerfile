@@ -18,11 +18,10 @@ RUN set -e; update-ca-certificates; \
         if [ -f "$c" ]; then keytool -importcert -noprompt -cacerts -storepass changeit -alias "podbox-$(basename "$c")" -file "$c"; fi; \
       done; \
     fi
-ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
-    NODE_USE_ENV_PROXY=1
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 COPY entrypoint.sh /usr/local/bin/podbox-entrypoint
 RUN chmod 0755 /usr/local/bin/podbox-entrypoint
 USER agent
 WORKDIR /home/agent
 ENTRYPOINT ["/usr/local/bin/podbox-entrypoint"]
-CMD ["sleep", "infinity"]
+CMD ["podbox-idle"]

@@ -61,7 +61,8 @@ func (a *app) newRoot() *cobra.Command {
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return &output.Error{Code: output.ExitUsage, Err: err}
 	})
-	root.AddCommand(a.versionCmd(), a.doctorCmd(), a.policyCmd(), a.proxyCmd(), a.imageCmd())
+	root.AddCommand(a.runCmd(), a.createCmd(), a.lsCmd(), a.execCmd(), a.attachCmd(), a.policyCmd(), a.imageCmd(), a.doctorCmd(), a.versionCmd(), a.proxyCmd())
+	root.AddCommand(a.lifecycleCmds()...)
 	return root
 }
 

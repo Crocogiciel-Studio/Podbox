@@ -18,6 +18,8 @@ type fakeRT struct {
 	files  map[string]map[string]string // tag -> context files
 }
 
+func (f *fakeRT) ImageList(context.Context, string) ([]runtime.Image, error) { return nil, nil }
+
 func (f *fakeRT) ImageExists(_ context.Context, ref string) (bool, error) { return f.exists[ref], nil }
 
 func (f *fakeRT) ImageBuild(_ context.Context, s runtime.BuildSpec) error {

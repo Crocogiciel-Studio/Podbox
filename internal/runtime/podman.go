@@ -149,6 +149,11 @@ func (p *Podman) ImageList(ctx context.Context, label string) ([]Image, error) {
 	return imgs, nil
 }
 
+func (p *Podman) ImageRemove(ctx context.Context, ref string) error {
+	_, err := p.out(ctx, "rmi", ref)
+	return err
+}
+
 func (p *Podman) VolumeCreate(ctx context.Context, name string, labels map[string]string) error {
 	args := append([]string{"volume", "create"}, labelFlags(labels)...)
 	_, err := p.out(ctx, append(args, name)...)
