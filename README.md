@@ -4,7 +4,7 @@ Run coding agents (Claude Code, Kiro) autonomously in a hardened rootless Podman
 
 - The agent container has no route out, no DNS, and no access to the host or its loopback services; its only exit is the sandbox proxy.
 - The proxy allows only listed hosts (deny by default) and answers refusals with a message the agent can read and relay.
-- The project is mounted read-write; secrets (`.env*`, keys, `.ssh/`, `.git/hooks/`, ...) are always hidden.
+- The project is mounted read-write; secrets (`.env*`, keys, `.ssh/`, `.git/hooks/`, ...) are always hidden. `.git/config` is read-only. Your home directory and podbox's own config/state directories are refused as workspaces.
 - The agent login persists in a per-agent volume, never in your `$HOME`.
 
 Status: v0.1. See [security model](docs/security-model.md) and [policy reference](docs/policy.md).
@@ -86,7 +86,7 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 | --- | --- |
 | 0 | success |
 | 1 | generic error (sandbox exists, sandbox not running, ...) |
-| 2 | usage error (bad flag, argument, agent or `--output` value) |
+| 2 | usage error (bad flag, argument, agent or `--output` value, unsafe workspace) |
 | 3 | prerequisite missing (see `podbox doctor`) |
 | 4 | not found (sandbox) |
 | 5 | runtime error (podman failed) |

@@ -13,6 +13,7 @@ import (
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
+	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
 func (a *app) manager(ctx context.Context) (*sandbox.Manager, error) {
@@ -20,9 +21,11 @@ func (a *app) manager(ctx context.Context) (*sandbox.Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	home, _ := os.UserHomeDir() // no home: nothing to protect beyond podbox's directories
 	return &sandbox.Manager{
 		RT: e.rt, Store: e.store, Images: e.builder, Config: e.cfg, Info: e.info,
 		GOOS: goruntime.GOOS, Getenv: os.Getenv, Warn: a.out.Warn,
+		Home: home, Owned: e.paths.Owned(),
 	}, nil
 }
 
@@ -35,6 +38,8 @@ func classify(err error) error {
 		return err
 	case errors.Is(err, sandbox.ErrNotFound):
 		return &output.Error{Code: output.ExitNotFound, Err: err}
+	case errors.Is(err, workspace.ErrUnsafe):
+		return &output.Error{Code: output.ExitUsage, Err: err}
 	case errors.Is(err, sandbox.ErrExists), errors.Is(err, sandbox.ErrNotRunning):
 		return &output.Error{Code: output.ExitGeneric, Err: err}
 	case errors.As(err, &cmdErr):

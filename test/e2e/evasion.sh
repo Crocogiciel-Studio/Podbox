@@ -10,6 +10,7 @@ EXTRA=${E2E_EXTRA_HOST:-proxy.golang.org}
 ATTACK=${E2E_ATTACK_HOST:-example.com}
 NAME=e2e
 UPNAME=e2e-up
+MVNAME=e2e-mv
 UPSTREAM_CTR=podbox-e2e-upstream
 WORK=$(mktemp -d)
 PROJ=$WORK/project
@@ -19,13 +20,16 @@ cleanup() {
 	[ -n "${LOOP_PID:-}" ] && kill "$LOOP_PID" 2>/dev/null
 	podman rm -f -t 0 "$UPSTREAM_CTR" >/dev/null 2>&1
 	pb rm "$UPNAME" >/dev/null 2>&1
+	pb rm "$MVNAME" >/dev/null 2>&1
+	pb rm e2e-home >/dev/null 2>&1
 	pb rm "$NAME" --volumes >/dev/null 2>&1
 	rm -rf "$WORK" "$PODBOX_HOME"
 }
 trap cleanup EXIT
 
 # Fixtures: a project with secrets, a fake host ~/.ssh, a host loopback service.
-mkdir -p "$PROJ/.git/hooks" "$PROJ/.ssh" "$PROJ/src" "$HOSTDIR/.ssh"
+mkdir -p "$PROJ/.ssh" "$PROJ/src" "$HOSTDIR/.ssh"
+git init -q "$PROJ" && rm -rf "$PROJ/.git/hooks" && mkdir "$PROJ/.git/hooks"
 echo 'API_KEY=leaked' >"$PROJ/.env"
 echo 'key' >"$PROJ/.ssh/id_project"
 printf '#!/bin/sh\necho pwned\n' >"$PROJ/.git/hooks/pre-commit"
@@ -75,6 +79,28 @@ check "project files readable and writable" sx "$NAME" "grep -q hello '$PROJ/src
 check "agent writes are owned by the host user" test "$(stat -c %u "$PROJ/src/out.txt")" = "$(id -u)"
 blocked "podman or docker socket reachable" sx "$NAME" "find / \( -path /proc -o -path /sys \) -prune -o -type s -print 2>/dev/null | grep -q ."
 blocked "container engine binary available" sx "$NAME" "command -v podman || command -v docker"
+
+echo "== git configuration"
+GITCFG=$(sha256sum <"$PROJ/.git/config")
+blocked "agent sets core.hooksPath" sx "$NAME" "git config core.hooksPath /tmp/x"
+blocked "agent appends to .git/config" sx "$NAME" "echo '[core] fsmonitor = /tmp/x' >>'$PROJ/.git/config'"
+blocked "agent replaces .git/config" sx "$NAME" "cp '$PROJ/.git/config' /tmp/c && mv -f /tmp/c '$PROJ/.git/config'"
+blocked "agent renames .git to plant its own" sx "$NAME" "mv -f '$PROJ/.git' '$PROJ/.git-old'"
+check ".git/config unchanged on the host" test "$(sha256sum <"$PROJ/.git/config")" = "$GITCFG"
+check "git commit still works in the sandbox" sx "$NAME" "git add src/readme.txt && GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@e2e GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@e2e git commit -qm agent"
+check "agent commit visible on the host" test "$(git -C "$PROJ" log -1 --format=%s 2>/dev/null)" = agent
+
+echo "== refused workspaces"
+refused_usage() { local err; err=$("$@" 2>&1 >/dev/null); [ $? -eq 2 ] && grep -q "unsafe workspace" <<<"$err"; }
+mkdir -p "$WORK/fakehome"
+check "workspace containing PODBOX_HOME refused (exit 2)" refused_usage env PODBOX_HOME="$WORK/fakehome/.podbox" "$PODBOX" create shell "$WORK/fakehome" --name e2e-home
+check "home directory refused (exit 2)" refused_usage pb create shell "$HOME" --name e2e-home
+check "workspace inside PODBOX_HOME refused (exit 2)" refused_usage pb create shell "$PODBOX_HOME" --name e2e-home
+mkdir -p "$WORK/moved"
+pb create shell "$WORK/moved" --name "$MVNAME" >/dev/null 2>&1
+rmdir "$WORK/moved" && ln -s "$PODBOX_HOME" "$WORK/moved"
+check "start refuses a workspace now resolving to PODBOX_HOME (exit 2)" refused_usage pb start "$MVNAME"
+pb rm "$MVNAME" >/dev/null 2>&1
 
 echo "== privileges"
 check "uid 1000" test "$(sx "$NAME" 'id -u')" = 1000

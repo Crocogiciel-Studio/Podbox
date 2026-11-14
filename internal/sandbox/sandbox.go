@@ -35,6 +35,9 @@ type Manager struct {
 	GOOS   string
 	Getenv func(string) string
 	Warn   func(format string, a ...any)
+	// Home and Owned bound the workspaces accepted (see workspace.CheckRoot).
+	Home  string
+	Owned []string
 }
 
 // Status is a sandbox as seen from the engine and the state directory.
@@ -64,6 +67,9 @@ func (m *Manager) Create(ctx context.Context, name, agentName, ws string) (meta 
 	}
 	if fi, err := os.Stat(ws); err != nil || !fi.IsDir() {
 		return meta, fmt.Errorf("workspace %s is not a directory", ws)
+	}
+	if err := workspace.CheckRoot(ws, m.Home, m.Owned); err != nil {
+		return meta, err
 	}
 	if _, err := m.Store.Load(name); err == nil {
 		return meta, fmt.Errorf("%w: %s", ErrExists, name)
@@ -178,6 +184,9 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 	for _, w := range res.Warnings {
 		m.Warn("%s", w)
 	}
+	if gitPointer(meta.Workspace) {
+		m.Warn(".git is a file (worktree or submodule): the hooks and config of the git directory it points to are not protected from the agent")
+	}
 	var limits *runtime.Limits
 	if runtime.LimitsDelegated(m.Info) {
 		l := m.Config.Limits
@@ -189,7 +198,7 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 		return err
 	}
 	return m.RT.ContainerCreate(ctx, agentSpec(agentInput{
-		Meta: meta, Image: ref, ProxyIP: ip, ReadOnly: readOnlyProject(meta.Workspace), Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name),
+		Meta: meta, Image: ref, ProxyIP: ip, ReadOnly: readOnlyProject(meta.Workspace), GitDir: gitDir(meta.Workspace), Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name),
 		Limits: limits, SELinux: m.Info.SELinux, GOOS: m.GOOS,
 	}))
 }
@@ -199,6 +208,9 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 func (m *Manager) Start(ctx context.Context, name string) error {
 	meta, err := m.Store.Load(name)
 	if err != nil {
+		return err
+	}
+	if err := workspace.CheckRoot(meta.Workspace, m.Home, m.Owned); err != nil {
 		return err
 	}
 	if err := m.refreshPolicy(meta); err != nil {

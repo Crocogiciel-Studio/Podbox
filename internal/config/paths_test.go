@@ -55,3 +55,14 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatal("unknown key accepted")
 	}
 }
+
+func TestOwned(t *testing.T) {
+	p, _ := resolve("linux", func(k string) string { return map[string]string{"PODBOX_HOME": "/p"}[k] }, fixed("/h"), fixed("/l"), fixed("/c"))
+	if got := p.Owned(); len(got) != 4 || got[0] != "/p" {
+		t.Fatalf("PODBOX_HOME owned %v", got)
+	}
+	p, _ = resolve("linux", func(string) string { return "" }, fixed("/h"), fixed("/l"), fixed("/c"))
+	if got := p.Owned(); len(got) != 3 {
+		t.Fatalf("default owned %v", got)
+	}
+}

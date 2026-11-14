@@ -117,3 +117,35 @@ func TestAgentSpecReadOnlyProjectFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestGitConfigReadOnly(t *testing.T) {
+	repo := t.TempDir()
+	write(t, filepath.Join(repo, ".git", "config"), "[core]\n")
+	if ro := readOnlyProject(repo); !reflect.DeepEqual(ro, []string{".git/config"}) || gitPointer(repo) {
+		t.Fatalf("git dir: read-only %v, pointer %v", ro, gitPointer(repo))
+	}
+	if !gitDir(repo) {
+		t.Fatal(".git directory not detected")
+	}
+	s := agentSpec(agentInput{Meta: Meta{Name: "t", Agent: "shell", Workspace: "/p"}, GOOS: "linux", ReadOnly: []string{".git/config"}, GitDir: true})
+	argv := strings.Join(runtime.CreateArgs(s), " ")
+	for _, want := range []string{"--volume /p/.git:/p/.git ", "--volume /p/.git/config:/p/.git/config:ro"} {
+		if !strings.Contains(argv, want) {
+			t.Errorf("missing %q in %s", want, argv)
+		}
+	}
+
+	worktree := t.TempDir()
+	write(t, filepath.Join(worktree, ".git"), "gitdir: "+filepath.Join(repo, ".git")+"\n")
+	if ro := readOnlyProject(worktree); len(ro) != 0 || !gitPointer(worktree) || gitDir(worktree) {
+		t.Fatalf("git file: read-only %v, pointer %v", ro, gitPointer(worktree))
+	}
+
+	linked := t.TempDir()
+	if err := os.Symlink(filepath.Join(repo, ".git"), filepath.Join(linked, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if ro := readOnlyProject(linked); len(ro) != 0 || gitDir(linked) {
+		t.Fatalf("symlinked .git mounted: %v", ro)
+	}
+}

@@ -199,5 +199,27 @@ func readOnlyProject(ws string) []string {
 			out = append(out, rel)
 		}
 	}
+	// .git/config can name hooks, fsmonitor or filter commands that the
+	// host's git would run; objects, refs, index and HEAD stay writable.
+	if gitDir(ws) {
+		if fi, err := os.Lstat(filepath.Join(ws, gitConfig)); err == nil && fi.Mode().IsRegular() {
+			out = append(out, gitConfig)
+		}
+	}
 	return out
+}
+
+const gitConfig = ".git/config"
+
+// gitDir reports a real .git directory (not a symlink).
+func gitDir(ws string) bool {
+	fi, err := os.Lstat(filepath.Join(ws, ".git"))
+	return err == nil && fi.IsDir()
+}
+
+// gitPointer reports a .git file (worktree or submodule): its git directory
+// lies outside the workspace and is not protected.
+func gitPointer(ws string) bool {
+	fi, err := os.Lstat(filepath.Join(ws, ".git"))
+	return err == nil && fi.Mode().IsRegular()
 }

@@ -9,9 +9,21 @@ import (
 
 // Paths are the directories podbox owns.
 type Paths struct {
+	Root   string // PODBOX_HOME, when set
 	Config string
 	State  string
 	Cache  string
+}
+
+// Owned lists every directory podbox owns, which no workspace may overlap.
+func (p Paths) Owned() []string {
+	var out []string
+	for _, d := range []string{p.Root, p.Config, p.State, p.Cache} {
+		if d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // Resolve returns the directories for the current user.
@@ -21,7 +33,7 @@ func Resolve() (Paths, error) {
 
 func resolve(goos string, env func(string) string, home, cfgDir, cacheDir func() (string, error)) (Paths, error) {
 	if h := env("PODBOX_HOME"); h != "" {
-		return Paths{Config: filepath.Join(h, "config"), State: filepath.Join(h, "state"), Cache: filepath.Join(h, "cache")}, nil
+		return Paths{Root: h, Config: filepath.Join(h, "config"), State: filepath.Join(h, "state"), Cache: filepath.Join(h, "cache")}, nil
 	}
 	var p Paths
 	if goos == "linux" {

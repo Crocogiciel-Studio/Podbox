@@ -68,6 +68,7 @@ type agentInput struct {
 	Image    string
 	ProxyIP  string
 	ReadOnly []string // workspace paths the agent may read but not edit
+	GitDir   bool     // .git is a directory: bind it on itself so it cannot be renamed
 	Masks    []workspace.Mask
 	EmptyDir string
 	Limits   *runtime.Limits
@@ -85,6 +86,9 @@ func agentSpec(in agentInput) runtime.ContainerSpec {
 		{Type: runtime.Bind, Source: m.Workspace, Target: target, Relabel: in.SELinux},
 		{Type: runtime.Volume, Source: HomeVolume(m.Agent), Target: "/home/agent"},
 		{Type: runtime.Tmpfs, Target: "/tmp", Options: "rw,nosuid,nodev,size=1g"},
+	}
+	if in.GitDir {
+		mounts = append(mounts, runtime.Mount{Type: runtime.Bind, Source: filepath.Join(m.Workspace, ".git"), Target: path.Join(target, ".git"), Relabel: in.SELinux})
 	}
 	for _, rel := range in.ReadOnly {
 		p := path.Join(target, rel)
