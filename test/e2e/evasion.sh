@@ -13,6 +13,7 @@ UPNAME=e2e-up
 MVNAME=e2e-mv
 HKNAME=e2e-hooks
 MKNAME=e2e-masks
+URNAME=e2e-unread
 WTNAME=e2e-wt
 UPSTREAM_CTR=podbox-e2e-upstream
 WORK=$(mktemp -d)
@@ -26,9 +27,11 @@ cleanup() {
 	pb rm "$MVNAME" >/dev/null 2>&1
 	pb rm "$HKNAME" >/dev/null 2>&1
 	pb rm "$MKNAME" >/dev/null 2>&1
+	pb rm "$URNAME" >/dev/null 2>&1
 	pb rm "$WTNAME" >/dev/null 2>&1
 	pb rm e2e-home >/dev/null 2>&1
 	pb rm "$NAME" --volumes >/dev/null 2>&1
+	chmod -R u+rwx "$WORK" 2>/dev/null
 	rm -rf "$WORK" "$PODBOX_HOME"
 }
 trap cleanup EXIT
@@ -171,12 +174,40 @@ pb start "$MKNAME" >/dev/null 2>"$WORK/mk.start"
 for mv in "config/prod.yaml -> config2/prod.yaml" "secret/data.txt -> s2/data.txt" ".docker/config.json -> dk2/config.json"; do
 	check "start warns: $mv" grep -qF "  $mv (still masked)" "$WORK/mk.start"
 done
-check "start warning is loud" grep -q "MASKED PATHS MOVED OR MISSING" "$WORK/mk.start"
+check "start warning is loud" grep -q "MASKED PATHS MOVED in" "$WORK/mk.start"
 for f in config2/prod.yaml s2/data.txt dk2/config.json; do
 	blocked "read $f after rename + stop/start" sx "$MKNAME" "grep -q secret $f"
 done
 check "renamed secrets intact on the host" grep -q prod-secret "$MK/config2/prod.yaml"
 pb rm "$MKNAME" >/dev/null 2>&1
+
+echo "== unreadable or missing masked paths refuse the start"
+UR=$WORK/unreadable
+mkdir -p "$UR/sub/.ssh" "$UR/sub2"
+echo 'ssh-secret-x' >"$UR/sub/.ssh/id_x"
+echo 'ENV_SECRET_X=1' >"$UR/sub2/.env"
+ur_start() { pb start "$URNAME" >/dev/null 2>"$WORK/ur.err"; echo $?; }
+ur_leak() { ! sx "$URNAME" "chmod 755 '$UR/sub' '$UR/sub2' 2>/dev/null; cat '$UR/sub/.ssh/id_x' '$UR/sub2/.env' 2>/dev/null" | grep -q SECRET; }
+pb create shell "$UR" --name "$URNAME" >/dev/null 2>&1 && pb start "$URNAME" >/dev/null 2>&1
+check "agent makes the parents of masked files unreadable" sx "$URNAME" "chmod 000 '$UR/sub' '$UR/sub2'"
+pb stop "$URNAME" >/dev/null 2>&1
+check "start refused (exit 7)" test "$(ur_start)" = 7
+check "refusal names the path and the host fix" grep -qF "cannot read $UR/sub" "$WORK/ur.err"
+check "refusal says chmod u+rx" grep -qF "chmod u+rx" "$WORK/ur.err"
+check "secrets never printed after the refused start" ur_leak
+chmod u+rx "$UR/sub" "$UR/sub2"
+check "start works once the host restores the permissions" test "$(ur_start)" = 0
+check "files still masked after the restart" ur_leak
+pb stop "$URNAME" >/dev/null 2>&1
+rm "$UR/sub2/.env"
+check "start refused on a missing masked path (exit 7)" test "$(ur_start)" = 7
+check "refusal lists the missing path" grep -qxF "  sub2/.env" "$WORK/ur.err"
+pb policy reload "$URNAME" >/dev/null 2>&1
+check "plain policy reload keeps the record" test "$(ur_start)" = 7
+check "policy reload --forget-missing prints the dropped record" grep -qxF -- "- mask sub2/.env (missing)" <<<"$(pb policy reload "$URNAME" --forget-missing 2>/dev/null)"
+check "start works after --forget-missing" test "$(ur_start)" = 0
+check "remaining file still masked" ur_leak
+pb rm "$URNAME" >/dev/null 2>&1
 
 echo "== linked worktree git directory"
 WTP=$WORK/wtmain

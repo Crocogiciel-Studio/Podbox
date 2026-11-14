@@ -83,7 +83,11 @@ func GitWarning(ws string, g GitIntegrity, names ...string) string {
 	var sb strings.Builder
 	list := func(fs []workspace.GitFinding) {
 		for _, f := range fs {
-			fmt.Fprintf(&sb, "  %s: %s\n", f.Path, f.Reason)
+			if f.Path == "" {
+				fmt.Fprintf(&sb, "  %s\n", f.Reason)
+			} else {
+				fmt.Fprintf(&sb, "  %s: %s\n", f.Path, f.Reason)
+			}
 		}
 	}
 	if len(gitF) > 0 {

@@ -15,6 +15,9 @@ const (
 	ExitRuntime  = 5
 	// ExitGitIntegrity: podbox git-check found suspicious .git changes.
 	ExitGitIntegrity = 6
+	// ExitMasks: a workspace path is unreadable or a recorded mask is
+	// missing, so the agent is not started.
+	ExitMasks = 7
 )
 
 var kinds = map[int]string{
@@ -24,6 +27,7 @@ var kinds = map[int]string{
 	ExitNotFound:     "not_found",
 	ExitRuntime:      "runtime",
 	ExitGitIntegrity: "git_integrity",
+	ExitMasks:        "masks",
 }
 
 // Error is an error carrying its exit code.

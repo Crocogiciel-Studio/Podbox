@@ -47,7 +47,8 @@ func (s Store) saveMasks(name string, ts []workspace.Tracked) error {
 }
 
 // ResolveMasks computes the masks of a sandbox from the .sandboxignore
-// snapshot and the record, and saves the grown record.
+// snapshot and the record, and saves the grown record. It fails (wrapping
+// workspace.ErrMasks) on an unreadable workspace path or a missing record.
 func (s Store) ResolveMasks(m Meta) (workspace.Result, error) {
 	ignore, _, err := readSnap(s.ProjectIgnorePath(m.Name))
 	if err != nil {
@@ -61,43 +62,46 @@ func (s Store) ResolveMasks(m Meta) (workspace.Result, error) {
 	if err != nil {
 		return res, err
 	}
-	return res, s.saveMasks(m.Name, res.Tracked)
+	if err := s.saveMasks(m.Name, res.Tracked); err != nil {
+		return res, err
+	}
+	return res, workspace.MissingError(m.Name, res.Missing)
 }
 
 // ReloadMasks re-records the masks after a snapshot refresh, dropping the
-// records no pattern matches any more and the missing ones; it returns the
-// dropped paths.
-func (s Store) ReloadMasks(m Meta) ([]string, error) {
+// records no pattern matches any more and, with forgetMissing, the missing
+// ones. It returns the dropped paths and the missing ones it kept.
+func (s Store) ReloadMasks(m Meta, forgetMissing bool) (dropped, missing []string, err error) {
 	ignore, _, err := readSnap(s.ProjectIgnorePath(m.Name))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ts, err := s.loadMasks(m.Name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	res, err := workspace.Resolve(m.Workspace, ignore, ts)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	kept, dropped := workspace.Shrink(res, ignore)
-	return dropped, s.saveMasks(m.Name, kept)
+	kept, dropped := workspace.Shrink(res, ignore, forgetMissing)
+	if !forgetMissing {
+		missing = res.Missing
+	}
+	return dropped, missing, s.saveMasks(m.Name, kept)
 }
 
-// MaskWarning is the loud advice printed when recorded masked paths moved
-// or vanished; "" when none did.
+// MaskWarning is the loud advice printed when recorded masked paths moved;
+// "" when none did. Missing ones refuse the start instead (MissingError).
 func MaskWarning(m Meta, res workspace.Result) string {
-	if len(res.Moved)+len(res.Missing) == 0 {
+	if len(res.Moved) == 0 {
 		return ""
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s: MASKED PATHS MOVED OR MISSING in %s (a parent directory was renamed or the file removed, by you or the agent)\n", m.Name, m.Workspace)
+	fmt.Fprintf(&sb, "%s: MASKED PATHS MOVED in %s (a parent directory was renamed, by you or the agent)\n", m.Name, m.Workspace)
 	for _, mv := range res.Moved {
 		fmt.Fprintf(&sb, "  %s -> %s (still masked)\n", mv.From, mv.To)
 	}
-	for _, p := range res.Missing {
-		fmt.Fprintf(&sb, "  %s -> missing\n", p)
-	}
-	fmt.Fprintf(&sb, "Review the workspace; podbox keeps masking them. To forget a record, fix %s and run podbox policy reload %s", workspace.IgnoreFile, m.Name)
+	fmt.Fprintf(&sb, "Review the workspace; podbox masks them at their new path. To stop masking one, remove its pattern from %s and run podbox policy reload %s", workspace.IgnoreFile, m.Name)
 	return sb.String()
 }

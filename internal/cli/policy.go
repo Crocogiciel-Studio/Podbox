@@ -10,6 +10,7 @@ import (
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
 	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
+	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
 func (a *app) policyCmd() *cobra.Command {
@@ -43,7 +44,8 @@ func (a *app) warnDrift(st sandbox.Store, m sandbox.Meta) {
 }
 
 func (a *app) policyReloadCmd() *cobra.Command {
-	return &cobra.Command{
+	var forgetMissing bool
+	c := &cobra.Command{
 		Use:   "reload <sandbox>",
 		Short: "Re-read .podbox/policy.yaml and .sandboxignore from the project after review, and apply them",
 		Args:  cobra.ExactArgs(1),
@@ -60,8 +62,11 @@ func (a *app) policyReloadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if c.MasksDropped, err = st.ReloadMasks(m); err != nil {
-				return err
+			if c.MasksDropped, c.MasksMissing, err = st.ReloadMasks(m, forgetMissing); err != nil {
+				return classify(err)
+			}
+			if err := workspace.MissingError(m.Name, c.MasksMissing); err != nil {
+				c.Warnings = append(c.Warnings, "kept the missing mask records; "+err.Error())
 			}
 			e, err := st.RefreshPolicy(m)
 			if err != nil {
@@ -96,6 +101,8 @@ func (a *app) policyReloadCmd() *cobra.Command {
 			})
 		},
 	}
+	c.Flags().BoolVar(&forgetMissing, "forget-missing", false, "also drop the recorded masks found nowhere in the workspace (each is printed)")
+	return c
 }
 
 func (a *app) policySetCmd(verb string, allow bool) *cobra.Command {

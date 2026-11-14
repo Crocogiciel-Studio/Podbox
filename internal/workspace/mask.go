@@ -2,10 +2,12 @@
 package workspace
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -77,11 +79,17 @@ func Matcher(ignore []byte) func(rel string, dir bool) bool {
 
 type fileKey struct{ dev, ino uint64 }
 
+// ErrMasks marks a mask set podbox cannot trust: a workspace path it could
+// not read, or a recorded masked path found nowhere. The agent is not started.
+var ErrMasks = errors.New("masks cannot be verified")
+
 // Resolve walks root once, through an os.Root and without following
 // symbolic links, and returns what to mask: what the patterns match
 // now, and every recorded path wherever it now lives (same device and
 // inode) or still at its recorded path. ignore is the .sandboxignore
 // content to apply (the host-side snapshot, never the live workspace file).
+// Any walk error fails the resolution (wrapping ErrMasks): a directory podbox
+// cannot read may hold secrets the agent could read after a chmod.
 func Resolve(root string, ignore []byte, tracked []Tracked) (Result, error) {
 	res := Result{Tracked: append([]Tracked(nil), tracked...)}
 	masked := Matcher(ignore)
@@ -112,10 +120,7 @@ func Resolve(root string, ignore []byte, tracked []Tracked) (Result, error) {
 	defer r.Close()
 	err = fs.WalkDir(r.FS(), ".", func(rel string, d fs.DirEntry, err error) error {
 		if err != nil {
-			if rel == "." {
-				return err
-			}
-			return nil // unreadable entries are invisible to the agent too
+			return walkError(root, rel, err)
 		}
 		if rel == "." {
 			return nil
@@ -130,19 +135,20 @@ func Resolve(root string, ignore []byte, tracked []Tracked) (Result, error) {
 		if !dir && !d.Type().IsRegular() {
 			return nil
 		}
-		var dev, ino uint64
-		var hasID bool
-		if fi, err := d.Info(); err == nil {
-			dev, ino, hasID = fileID(fi)
+		fi, err := d.Info()
+		if err != nil {
+			return walkError(root, rel, err)
 		}
+		dev, ino, hasID := fileID(fi)
 		switch i, ok := byID[fileKey{dev, ino}]; {
 		case hasID && ok && res.Tracked[i].Dir == dir:
 			if t := &res.Tracked[i]; !byIDPlaced[i] || rel == t.Rel {
 				t.Now, byIDPlaced[i] = rel, true
 			}
-		case byRelMatch(byRel, res.Tracked, rel, dir):
+		case byRelMatch(byRel, rel):
+			// Still at its recorded path, possibly replaced: masked there.
 			if j := byRel[rel]; j < len(byIDPlaced) && !byIDPlaced[j] {
-				res.Tracked[j].Now, newID[j] = rel, fileKey{dev, ino}
+				res.Tracked[j].Now, res.Tracked[j].Dir, newID[j] = rel, dir, fileKey{dev, ino}
 			}
 		case masked(rel, dir):
 			t := Tracked{Rel: rel, Dir: dir, Now: rel}
@@ -190,9 +196,14 @@ func Resolve(root string, ignore []byte, tracked []Tracked) (Result, error) {
 	return res, nil
 }
 
-func byRelMatch(byRel map[string]int, ts []Tracked, rel string, dir bool) bool {
-	j, ok := byRel[rel]
-	return ok && ts[j].Dir == dir
+func byRelMatch(byRel map[string]int, rel string) bool {
+	_, ok := byRel[rel]
+	return ok
+}
+
+func walkError(root, rel string, err error) error {
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	return fmt.Errorf("%w: cannot read %s (%w); podbox refuses to start the agent with a partial mask set. Fix it on the host, e.g. chmod u+rx %q, then retry", ErrMasks, p, err, p)
 }
 
 // covered reports rel inside a masked directory.
@@ -205,14 +216,36 @@ func covered(rel string, masked map[string]bool) bool {
 	return false
 }
 
+// MissingError is the refusal to start while recorded masked paths are
+// found nowhere; nil when none are.
+func MissingError(name string, missing []string) error {
+	if len(missing) == 0 {
+		return nil
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%v: %d masked path(s) of %s are missing and were not found elsewhere in the workspace:\n", ErrMasks, len(missing), name)
+	for _, p := range missing {
+		fmt.Fprintf(&sb, "  %s\n", p)
+	}
+	fmt.Fprintf(&sb, "Restore them on the host, or stop masking them with: podbox policy reload %s --forget-missing", name)
+	return &missingError{sb.String()}
+}
+
+type missingError struct{ msg string }
+
+func (e *missingError) Error() string { return e.msg }
+func (e *missingError) Unwrap() error { return ErrMasks }
+
 // Shrink drops the records of a resolution that no pattern matches any
-// more, at their recorded or current path, and the missing ones; it is
-// applied only on an explicit policy reload. It returns the kept records
-// and a description of each dropped one.
-func Shrink(res Result, ignore []byte) (kept []Tracked, dropped []string) {
+// more, at their recorded or current path, and, with forgetMissing, the
+// missing ones; it is applied only on an explicit policy reload. It returns
+// the kept records and a description of each dropped one.
+func Shrink(res Result, ignore []byte, forgetMissing bool) (kept []Tracked, dropped []string) {
 	masked := Matcher(ignore)
 	for _, t := range res.Tracked {
 		switch {
+		case t.Now == "" && !forgetMissing:
+			kept = append(kept, t)
 		case t.Now == "":
 			dropped = append(dropped, t.Rel+" (missing)")
 		case masked(t.Rel, t.Dir) || masked(t.Now, t.Dir):

@@ -60,7 +60,7 @@ podbox policy show claude-my-project
 | `exec <name> -- <cmd>...` | run a command in the workspace, exit with its code |
 | `attach <name>` | open a new agent session in a running sandbox |
 | `git-check <name> [--accept]` | compare `.git` with the fingerprint taken at creation, exit 6 on suspicious changes; `--accept` re-records it |
-| `policy show\|allow\|deny\|reload <name> [host]` | inspect and change the allowlist from the host |
+| `policy show\|allow\|deny\|reload <name> [host]` | inspect and change the allowlist from the host; `reload --forget-missing` also drops recorded masks found nowhere |
 | `image build <image>... [--force]` / `image ls` | build `proxy`, `base`, `claude`, `kiro`, `shell` |
 | `doctor` | check prerequisites |
 | `version` | build information |
@@ -92,6 +92,7 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 | 4 | not found (sandbox) |
 | 5 | runtime error (podman failed) |
 | 6 | `git-check` found suspicious `.git` changes |
+| 7 | masks cannot be verified: a workspace directory is unreadable (`create`, `start`, `policy reload`) or a recorded masked path is missing (`start`; restore it or `policy reload --forget-missing`); see [workspace masking](docs/security-model.md#workspace-masking) |
 
 `exec`, `attach` and `run` exit with the inner command's code. A suspicious `.git` change only prints a warning on these and on `start`, `stop`, `rm` and `ls` (and adds `git_integrity` to their JSON); see [git directory integrity](docs/security-model.md#git-directory-integrity). With `--output json`, errors are printed on stdout as `{"error":{"code":<exit code>,"kind":"...","message":"..."}}`.
 

@@ -102,6 +102,9 @@ type Changes struct {
 	IgnoreRemoved []string `json:"ignore_removed"`
 	// MasksDropped lists the recorded masks policy reload forgot.
 	MasksDropped []string `json:"masks_dropped,omitempty"`
+	// MasksMissing lists the recorded masks found nowhere, kept without
+	// --forget-missing; start refuses until they are restored or forgotten.
+	MasksMissing []string `json:"masks_missing,omitempty"`
 	Warnings     []string `json:"warnings,omitempty"`
 }
 

@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -156,7 +157,10 @@ func TestMasksFollowRenamedParents(t *testing.T) {
 	if len(fourth.Missing) != 1 || fourth.Missing[0] != "secret/data.txt" || !strings.Contains(maskList(fourth), "config2/prod.yaml") {
 		t.Fatalf("missing %v masks %s", fourth.Missing, maskList(fourth))
 	}
-	kept, dropped := Shrink(fourth, nil)
+	if kept, dropped := Shrink(fourth, nil, false); len(kept) != 3 || strings.Join(dropped, " ") != "config/prod.yaml (now config2/prod.yaml)" {
+		t.Fatalf("plain shrink dropped a missing record: kept %+v dropped %v", kept, dropped)
+	}
+	kept, dropped := Shrink(fourth, nil, true)
 	want := "config/prod.yaml (now config2/prod.yaml) secret/data.txt (missing)"
 	if strings.Join(dropped, " ") != want {
 		t.Fatalf("dropped %q, want %q", strings.Join(dropped, " "), want)
@@ -164,7 +168,7 @@ func TestMasksFollowRenamedParents(t *testing.T) {
 	if len(kept) != 2 { // .docker/config.json and .ssh/ are forced
 		t.Fatalf("kept %+v", kept)
 	}
-	if kept, _ := Shrink(fourth, ignore); len(kept) != 3 { // the rename alone never unmasks
+	if kept, _ := Shrink(fourth, ignore, true); len(kept) != 3 { // the rename alone never unmasks
 		t.Fatalf("kept with the patterns %+v", kept)
 	}
 }
@@ -187,5 +191,76 @@ func TestMaskSurvivesReplacement(t *testing.T) {
 	second, err := Resolve(root, ignore, first.Tracked)
 	if err != nil || len(second.Moved)+len(second.Missing) != 0 || maskList(second) != "cfg/prod.yaml" {
 		t.Fatalf("%+v %v", second, err)
+	}
+}
+
+func TestResolveRefusesUnreadableDirectories(t *testing.T) {
+	if goruntime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions enforced")
+	}
+	root := tree(t, map[string]string{"sub/.ssh/id_x": "k", "sub2/.env": "A=1", "deep/.ssh/id_y": "k"})
+	first, err := Resolve(root, nil, nil)
+	if err != nil || len(first.Masks) != 3 {
+		t.Fatalf("%+v %v", first.Masks, err)
+	}
+	// An unreadable masked directory is masked without being read.
+	lock(t, filepath.Join(root, "deep/.ssh"))
+	if _, err := Resolve(root, nil, first.Tracked); err != nil {
+		t.Fatalf("unreadable masked directory: %v", err)
+	}
+	for _, d := range []string{"sub", "sub2"} {
+		lock(t, filepath.Join(root, d))
+	}
+	res, err := Resolve(root, nil, first.Tracked)
+	if !errors.Is(err, ErrMasks) {
+		t.Fatalf("got %v, want ErrMasks", err)
+	}
+	p := filepath.Join(root, "sub")
+	if msg := err.Error(); !strings.Contains(msg, "cannot read "+p) || !strings.Contains(msg, "chmod u+rx") {
+		t.Fatalf("message %q", msg)
+	}
+	if len(res.Masks) == 3 {
+		t.Fatalf("partial result looks complete: %+v", res.Masks)
+	}
+}
+
+// lock makes dir unreadable until the test ends.
+func lock(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+}
+
+func TestRecordedPathKeptWhateverItsType(t *testing.T) {
+	root := tree(t, map[string]string{"cfg/prod.yaml": "v1"})
+	first, err := Resolve(root, []byte("/cfg/prod.yaml\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(root, "cfg/prod.yaml")
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(p, "inner"), "v2") // now a directory, pattern gone
+	res, err := Resolve(root, nil, first.Tracked)
+	if err != nil || len(res.Missing) != 0 || maskList(res) != "cfg/prod.yaml/" {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+func TestMissingError(t *testing.T) {
+	if MissingError("v", nil) != nil {
+		t.Fatal("error without missing records")
+	}
+	err := MissingError("v", []string{"sub/.ssh", "sub2/.env"})
+	if !errors.Is(err, ErrMasks) {
+		t.Fatalf("%v is not ErrMasks", err)
+	}
+	for _, s := range []string{"  sub/.ssh\n", "  sub2/.env\n", "podbox policy reload v --forget-missing"} {
+		if !strings.Contains(err.Error(), s) {
+			t.Errorf("missing %q in %q", s, err)
+		}
 	}
 }

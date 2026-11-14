@@ -38,6 +38,8 @@ func classify(err error) error {
 		return err
 	case errors.Is(err, sandbox.ErrNotFound):
 		return &output.Error{Code: output.ExitNotFound, Err: err}
+	case errors.Is(err, workspace.ErrMasks):
+		return &output.Error{Code: output.ExitMasks, Err: err}
 	case errors.Is(err, workspace.ErrUnsafe):
 		return &output.Error{Code: output.ExitUsage, Err: err}
 	case errors.Is(err, sandbox.ErrExists), errors.Is(err, sandbox.ErrNotRunning):

@@ -22,7 +22,7 @@ import (
 // can make host git run commands or read another repository; normal churn
 // (objects, refs, logs, index, HEAD, ...) is left out so commits, branches,
 // rebases, stashes and gc do not change it. It also records the worktree
-// files that define hooks (see FingerprintHooks).
+// files that define hooks (see fingerprintHooks).
 
 // GitPrint is a fingerprint of a workspace's .git.
 type GitPrint struct {
@@ -37,12 +37,15 @@ type GitPrint struct {
 	PendingExec []string `json:"pending_exec_todos,omitempty"`
 	// Hooks maps worktree hook files to their sha256.
 	Hooks map[string]string `json:"hooks,omitempty"`
+	// HookFiles counts the files under the hook sources; past maxHookFiles
+	// only the first ones, in name order, are hashed.
+	HookFiles int `json:"hook_files,omitempty"`
 }
 
 // GitFinding is one suspicious difference, with a path relative to the
 // workspace.
 type GitFinding struct {
-	Path   string `json:"path"`
+	Path   string `json:"path"` // "" for a finding on all hook files
 	Reason string `json:"reason"`
 	Hook   bool   `json:"hook,omitempty"` // a worktree hook file, outside .git
 }
@@ -178,7 +181,7 @@ func FingerprintGit(ws string) (GitPrint, error) {
 	}
 	defer r.Close()
 	p, err := fingerprintGitDir(r)
-	p.Hooks = fingerprintHooks(r)
+	p.Hooks, p.HookFiles = fingerprintHooks(r)
 	return p, err
 }
 
@@ -264,7 +267,7 @@ func pendingExec(g *os.Root, todo string) bool {
 // DiffGit lists what changed from old to cur that git on the host could
 // act on, sorted by path.
 func DiffGit(old, cur GitPrint) []GitFinding {
-	out := append(diffGitDir(old, cur), diffHooks(old.Hooks, cur.Hooks)...)
+	out := append(diffGitDir(old, cur), diffHooks(old, cur)...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
 }

@@ -3,6 +3,7 @@ package workspace
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
@@ -100,19 +101,12 @@ func hooksPath(r *os.Root, ws string) string {
 	return rel
 }
 
-// FingerprintHooks maps every file under the hook sources to its sha256
-// ("link:<target>" for a symbolic link, never followed).
-func FingerprintHooks(ws string) map[string]string {
-	r, err := os.OpenRoot(ws)
-	if err != nil {
-		return map[string]string{}
-	}
-	defer r.Close()
-	return fingerprintHooks(r)
-}
-
-func fingerprintHooks(r *os.Root) map[string]string {
+// fingerprintHooks maps the files under the hook sources to their sha256
+// ("link:<target>" for a symbolic link, never followed), the first
+// maxHookFiles in name order, and returns how many files there are.
+func fingerprintHooks(r *os.Root) (map[string]string, int) {
 	out := map[string]string{}
+	n := 0
 	for _, src := range hookCandidates(r, r.Name()) {
 		src = strings.TrimSuffix(src, "/")
 		fi, err := Lstat(r, src)
@@ -120,11 +114,13 @@ func fingerprintHooks(r *os.Root) map[string]string {
 		case err != nil:
 			continue
 		case fi.Mode()&fs.ModeSymlink != 0:
+			n++
 			if t, err := Readlink(r, src); err == nil {
 				out[src] = "link:" + t
 			}
 			continue
 		case fi.Mode().IsRegular():
+			n++
 			if sum, err := HashFile(r, src, maxHookFile); err == nil {
 				out[src] = sum
 			}
@@ -137,7 +133,10 @@ func fingerprintHooks(r *os.Root) map[string]string {
 			continue
 		}
 		_ = fs.WalkDir(d.FS(), ".", func(p string, e fs.DirEntry, err error) error {
-			if err != nil || len(out) >= maxHookFiles {
+			if err != nil || !e.Type().IsRegular() && e.Type()&fs.ModeSymlink == 0 {
+				return nil
+			}
+			if n++; len(out) >= maxHookFiles {
 				return nil
 			}
 			rel := path.Join(src, p)
@@ -155,12 +154,18 @@ func fingerprintHooks(r *os.Root) map[string]string {
 		})
 		d.Close()
 	}
-	return out
+	return out, n
 }
 
-// diffHooks lists hook files changed, added or removed, as findings.
-func diffHooks(old, cur map[string]string) []GitFinding {
+// diffHooks lists hook files changed, added or removed, as findings; one
+// finding when there are too many to verify.
+func diffHooks(oldPrint, curPrint GitPrint) []GitFinding {
 	const why = ": git runs it on your commits; review the diff before committing on the host"
+	if n := max(oldPrint.HookFiles, curPrint.HookFiles); n > maxHookFiles {
+		// No path: the files are under the hook sources listed at start.
+		return []GitFinding{{Reason: fmt.Sprintf("hook files exceed cap (%d > %d), not fully verified", n, maxHookFiles) + why, Hook: true}}
+	}
+	old, cur := oldPrint.Hooks, curPrint.Hooks
 	var out []GitFinding
 	for rel, sum := range cur {
 		if sum == Oversized {
