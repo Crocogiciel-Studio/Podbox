@@ -15,7 +15,9 @@ Un développeur lance Claude Code ou Kiro en mode autonome dans une sandbox Podm
 - Le trafic HTTPS autorisé n'est pas déchiffré en v0.1 ; aucune CA n'est installée dans l'agent.
 - Une requête bloquée reçoit une réponse lisible par l'agent qui nomme le host refusé et la commande à faire exécuter par l'humain pour l'autoriser.
 - L'allowlist d'une sandbox en cours d'exécution se modifie depuis l'hôte sans redémarrer l'agent ; rien dans la sandbox ne peut la modifier.
-- Le proxy peut chaîner vers un proxy d'entreprise (y compris avec interception TLS, via une CA d'entreprise fournie), sans que l'agent n'en connaisse ni l'adresse ni la CA.
+- Le proxy peut chaîner vers un proxy d'entreprise sans que l'agent n'en connaisse l'adresse ni les identifiants.
+- Si le proxy d'entreprise intercepte le TLS, la CA d'entreprise fournie est ajoutée aux trust stores de l'agent (sans déchiffrement côté sandbox, l'agent voit les certificats d'entreprise ; la masquer exige la v0.2).
+- Les destinations résolues en loopback, link-local ou métadonnées cloud sont toujours refusées ; celles en IP privée sont refusées sauf règle qui les autorise explicitement (services internes d'entreprise).
 - Les variables de proxy de l'hôte ne sont jamais transmises au conteneur agent.
 - Conteneur agent durci : utilisateur non root, toutes les capabilities retirées, pas d'élévation de privilèges, seccomp par défaut, limites CPU/RAM/PIDs, jamais privilégié, jamais de socket Podman ou Docker monté, aucun montage hôte hors workspace et volume d'auth.
 - Mode `shared` : le projet est monté en lecture-écriture ; les chemins sensibles (`.env*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.kube/`, `.npmrc`, `.pypirc`, `.netrc`, `.docker/config.json`, `.git/hooks/`) sont toujours masqués, sans possibilité d'annulation ; `.sandboxignore` (syntaxe gitignore) ajoute des masques.
@@ -62,4 +64,4 @@ None
 
 - Étude de faisabilité complète : [feasibility-study.md](./feasibility-study.md).
 - Roadmap révisée et arbitrages (allowlist sans déchiffrement, agent sans DNS, proxy embarqué, chaînage d'entreprise avancé en v0.1) : décidés en session d'onboarding le 2026-11-14.
-- Constat M0 préliminaire (Podman 5.7, rootless, Linux) : Podman transmet par défaut les variables de proxy de l'hôte aux conteneurs, et un réseau sans DNS hérite quand même du `resolv.conf` de l'hôte.
+- Constats M0 (Podman 5.7, rootless, Linux, derrière un proxy obligatoire) : Podman transmet par défaut les variables de proxy de l'hôte aux conteneurs ; un réseau `--internal --disable-dns` hérite quand même du `resolv.conf` de l'hôte ; une fois ces deux points neutralisés, le conteneur interne n'a ni egress direct, ni DNS, ni accès au loopback ou à la passerelle de l'hôte, et joint le conteneur proxy, lequel sort via le proxy amont.
