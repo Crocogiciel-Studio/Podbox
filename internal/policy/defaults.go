@@ -20,12 +20,14 @@ var agentHosts = map[string][]string{
 		"statsig.anthropic.com",
 		"sentry.io",
 	},
-	// Unverified: Kiro's hosts could not be observed (installer blocked in
-	// the build environment). Taken from Kiro/Amazon Q CLI documentation.
+	// cognito-identity and client-telemetry observed from kiro-cli 3.3.0;
+	// the login (OIDC/SSO) hosts come from Kiro docs and are not yet observed.
 	"kiro": {
 		"kiro.dev",
 		"*.kiro.dev",
 		"q.us-east-1.amazonaws.com",
+		"cognito-identity.us-east-1.amazonaws.com",
+		"client-telemetry.us-east-1.amazonaws.com",
 		"codewhisperer.us-east-1.amazonaws.com",
 		"oidc.us-east-1.amazonaws.com",
 		"*.awsapps.com",

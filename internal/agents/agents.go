@@ -18,7 +18,7 @@ type Agent struct {
 
 var table = map[string]Agent{
 	"claude": {Name: "claude", Image: images.Claude, Command: []string{"claude", "--dangerously-skip-permissions"}},
-	// Unverified: the autonomous flag could not be confirmed against a real Kiro install.
+	// --trust-all-tools confirmed on kiro-cli 3.3.0; login flow not yet verified end to end.
 	"kiro":  {Name: "kiro", Image: images.Kiro, Command: []string{"kiro-cli", "chat", "--trust-all-tools"}, Experimental: true},
 	"shell": {Name: "shell", Image: images.Shell, Command: []string{"bash", "-l"}},
 }
