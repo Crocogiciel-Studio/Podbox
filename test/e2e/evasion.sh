@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Asserts every isolation condition of a podbox sandbox against real podman.
 # Exits non-zero on any escape. Env: PODBOX (binary), E2E_ALLOWED_HOST,
-# E2E_EXTRA_HOST (reachable but not allowlisted by default).
+# E2E_EXTRA_HOST (reachable but not allowlisted by default), E2E_ATTACK_HOST
+# (a host the agent tries to allowlist itself).
 . "$(dirname "$0")/lib.sh"
 
 ALLOWED=${E2E_ALLOWED_HOST:-registry.npmjs.org}
 EXTRA=${E2E_EXTRA_HOST:-proxy.golang.org}
+ATTACK=${E2E_ATTACK_HOST:-example.com}
 NAME=e2e
 UPNAME=e2e-up
 UPSTREAM_CTR=podbox-e2e-upstream
@@ -28,6 +30,8 @@ echo 'API_KEY=leaked' >"$PROJ/.env"
 echo 'key' >"$PROJ/.ssh/id_project"
 printf '#!/bin/sh\necho pwned\n' >"$PROJ/.git/hooks/pre-commit"
 echo 'hello' >"$PROJ/src/readme.txt"
+echo 'private notes' >"$PROJ/notes.txt"
+echo 'notes.txt' >"$PROJ/.sandboxignore"
 echo 'host-private-key' >"$HOSTDIR/.ssh/id_e2e"
 LOOP_PORT=$((20000 + RANDOM % 10000))
 python3 -m http.server "$LOOP_PORT" --bind 127.0.0.1 --directory "$HOSTDIR" >/dev/null 2>&1 &
@@ -85,6 +89,32 @@ pb policy allow "$NAME" "$EXTRA" >/dev/null
 check "allowed after policy allow, without restart" eventually 5 reached "$NAME" "https://$EXTRA/"
 pb policy deny "$NAME" "$EXTRA" >/dev/null
 check "refused again after policy deny" eventually 5 refused "$NAME" "https://$EXTRA/"
+
+echo "== project policy and .sandboxignore tampering"
+# Asserts on the proxy's own decision log: an outer firewall may refuse hosts too.
+proxy_log() { podman logs "podbox-$NAME-proxy" 2>&1 | grep "\"host\":\"$ATTACK\""; }
+probe() { sx "$NAME" "curl -s -o /dev/null --max-time 10 http://$ATTACK/"; }
+denied_only() { probe; proxy_log | grep -q '"decision":"deny"' && ! proxy_log | grep -q '"decision":"allow"'; }
+allowed_by_project() { probe; proxy_log | grep '"decision":"allow"' | grep -q '"layer":"project"'; }
+ls_warns() { pb ls 2>&1 >/dev/null | grep -q "policy reload $NAME"; }
+reload_shows() { grep -qF -- "$1" <<<"$reload_out"; }
+check ".sandboxignore pattern is masked" sx "$NAME" "[ ! -s '$PROJ/notes.txt' ]"
+blocked "agent edits .sandboxignore" sx "$NAME" "echo >'$PROJ/.sandboxignore'"
+blocked "agent removes .sandboxignore" sx "$NAME" "rm -f '$PROJ/.sandboxignore'"
+check "agent writes .podbox/policy.yaml (absent at creation)" sx "$NAME" "mkdir -p '$PROJ/.podbox' && printf 'rules:\n  - host: $ATTACK\n    allow: true\n' >'$PROJ/.podbox/policy.yaml'"
+: >"$PROJ/.sandboxignore" # the tampering a read-only mount prevents, done from the host
+check "ls warns that project files changed" ls_warns
+pb policy allow "$NAME" example.org >/dev/null && pb stop "$NAME" >/dev/null && pb start "$NAME" >/dev/null 2>&1
+check "self-allowlisted host denied after policy allow + stop/start" denied_only
+check "removed .sandboxignore pattern still masked after stop/start" sx "$NAME" "[ ! -s '$PROJ/notes.txt' ]"
+blocked "agent edits .podbox/ once it exists" sx "$NAME" "echo x >>'$PROJ/.podbox/policy.yaml'"
+reload_out=$(pb policy reload "$NAME" 2>/dev/null)
+check "policy reload shows the added rule" reload_shows "+ rule allow $ATTACK"
+check "policy reload shows the removed pattern" reload_shows "- ignore notes.txt"
+check "reloaded project rule applies without restart" eventually 10 allowed_by_project
+rm -rf "$PROJ/.podbox" && echo 'notes.txt' >"$PROJ/.sandboxignore"
+pb policy reload "$NAME" >/dev/null 2>&1
+blocked "ls still warns after reload" ls_warns
 
 echo "== corporate upstream proxy (allow-all, basic auth)"
 PROXY_IMG=$(pb image ls -o json | jq -r '[.[] | select(.image == "proxy")][0].ref')

@@ -8,7 +8,7 @@ From general to specific, all merged into one effective policy per sandbox:
 | --- | --- |
 | defaults | built into podbox, per agent (below) |
 | global | `~/.config/podbox/policy.yaml` |
-| project | `<project>/.podbox/policy.yaml` |
+| project | `<project>/.podbox/policy.yaml`, as snapshotted (below) |
 | session | `podbox policy allow\|deny <sandbox> <host>` (sandbox state directory) |
 
 Precedence: a deny in any layer wins; otherwise an allow in any layer; otherwise deny. A project or session allow therefore never overrides a global deny.
@@ -36,9 +36,19 @@ Fail closed: a file that does not parse, has an unknown key, a bad pattern, a ru
 podbox policy show <sandbox>                       # rules with their layer, warnings
 podbox policy allow <sandbox> <host> [--scope session|project]
 podbox policy deny <sandbox> <host> [--scope session|project]
+podbox policy reload <sandbox>                     # re-read project files, print and apply the changes
 ```
 
-Changes rewrite the effective file atomically; the running proxy applies them within about a second. Edits to the global or project file by hand are picked up at the next `policy` change or `start`.
+Changes rewrite the effective file atomically; the running proxy applies them within about a second. Edits to the global file by hand are picked up at the next `policy` change or `start`.
+
+## Project files are snapshotted
+
+The agent can write the project, so podbox never trusts the live `.podbox/policy.yaml` or `.sandboxignore`. `create` copies both into the sandbox state directory; every later compilation (`policy allow|deny`, `start`) and mask computation uses that copy only. In the agent container both paths, when they exist, are mounted read-only.
+
+- `--scope project` writes the rule to the project file and to the snapshot, so the commit and the sandbox agree.
+- After editing a project file by hand (or noticing the agent did), review it and run `podbox policy reload <sandbox>`. It prints added and removed rules (`+ rule allow example.com`) and ignore patterns (`- ignore secrets/`), then applies the policy at once; mask changes take effect at the next `stop` + `start`. `--output json` returns `rules_added`, `rules_removed`, `ignore_added`, `ignore_removed`.
+- `podbox ls` and `policy show` warn when a project file differs from the snapshot; `ls -o json` lists them in `project_changed`.
+- A project file reached through a symbolic link is ignored with a warning.
 
 ## Defaults
 

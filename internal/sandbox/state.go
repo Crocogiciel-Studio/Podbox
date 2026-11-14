@@ -104,7 +104,7 @@ func (s Store) Sources(m Meta) policy.Sources {
 		Sandbox: m.Name,
 		Agent:   m.Agent,
 		Global:  filepath.Join(s.ConfigDir, "policy.yaml"),
-		Project: policy.ProjectFile(m.Workspace),
+		Project: s.ProjectPolicyPath(m.Name), // snapshot, never the live workspace file
 		Session: s.SessionPath(m.Name),
 	}
 }

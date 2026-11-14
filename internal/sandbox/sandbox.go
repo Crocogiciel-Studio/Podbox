@@ -46,6 +46,8 @@ type Status struct {
 	Proxy     string `json:"proxy"` // proxy container state, or "missing"
 	Image     string `json:"image,omitempty"`
 	StateDir  bool   `json:"state_dir"`
+	// ProjectChanged lists project files edited since the last snapshot.
+	ProjectChanged []string `json:"project_changed,omitempty"`
 }
 
 // Create builds images if needed and creates the sandbox's objects.
@@ -89,6 +91,13 @@ func (m *Manager) Create(ctx context.Context, name, agentName, ws string) (meta 
 	}()
 	if err = m.Store.Save(meta); err != nil {
 		return meta, err
+	}
+	c, err := m.Store.Snapshot(meta)
+	if err != nil {
+		return meta, err
+	}
+	for _, w := range c.Warnings {
+		m.Warn("%s", w)
 	}
 	if err = m.refreshPolicy(meta); err != nil {
 		return meta, err
@@ -144,7 +153,7 @@ func (m *Manager) createProxy(ctx context.Context, meta Meta) error {
 }
 
 // createAgent resolves masks now, so files added since the last start are
-// covered.
+// covered, using the .sandboxignore snapshot.
 func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 	ag, err := agents.Get(meta.Agent)
 	if err != nil {
@@ -158,7 +167,11 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 	if err != nil {
 		return err
 	}
-	res, err := workspace.Resolve(meta.Workspace)
+	ignore, _, err := readSnap(m.Store.ProjectIgnorePath(meta.Name))
+	if err != nil {
+		return err
+	}
+	res, err := workspace.Resolve(meta.Workspace, ignore)
 	if err != nil {
 		return err
 	}
@@ -176,13 +189,13 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 		return err
 	}
 	return m.RT.ContainerCreate(ctx, agentSpec(agentInput{
-		Meta: meta, Image: ref, ProxyIP: ip, Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name),
+		Meta: meta, Image: ref, ProxyIP: ip, ReadOnly: readOnlyProject(meta.Workspace), Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name),
 		Limits: limits, SELinux: m.Info.SELinux, GOOS: m.GOOS,
 	}))
 }
 
 // Start (re)creates stopped containers with current images, masks and
-// policy, then starts proxy and agent.
+// policy (from the project snapshot), then starts proxy and agent.
 func (m *Manager) Start(ctx context.Context, name string) error {
 	meta, err := m.Store.Load(name)
 	if err != nil {
@@ -308,6 +321,7 @@ func (m *Manager) List(ctx context.Context) ([]Status, error) {
 		if meta, err := m.Store.Load(e.Name()); err == nil {
 			s := get(meta.Name)
 			s.StateDir = true
+			s.ProjectChanged = m.Store.Drift(meta)
 			if s.Agent == "" {
 				s.Agent, s.Workspace = meta.Agent, meta.Workspace
 			}

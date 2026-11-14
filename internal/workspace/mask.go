@@ -2,7 +2,6 @@
 package workspace
 
 import (
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -39,16 +38,13 @@ type Result struct {
 	Warnings []string
 }
 
-// Resolve walks root once and returns what to mask.
-func Resolve(root string) (Result, error) {
+// Resolve walks root once and returns what to mask. ignore is the
+// .sandboxignore content to apply (the host-side snapshot, never the live
+// workspace file).
+func Resolve(root string, ignore []byte) (Result, error) {
 	var res Result
 	forced := gitignore.CompileIgnoreLines(Forced...)
-	user := &gitignore.GitIgnore{}
-	if b, err := os.ReadFile(filepath.Join(root, IgnoreFile)); err == nil {
-		user = gitignore.CompileIgnoreLines(strings.Split(string(b), "\n")...)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return res, err
-	}
+	user := gitignore.CompileIgnoreLines(strings.Split(string(ignore), "\n")...)
 	masked := func(rel string) bool { return forced.MatchesPath(rel) || user.MatchesPath(rel) }
 
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -86,7 +82,7 @@ func Resolve(root string) (Result, error) {
 			return nil
 		}
 		if why := looksSecret(p, d); why != "" {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("%s %s and is not masked; add it to %s to hide it", rel, why, IgnoreFile))
+			res.Warnings = append(res.Warnings, fmt.Sprintf("%s %s and is not masked; add it to %s and run podbox policy reload to hide it", rel, why, IgnoreFile))
 		}
 		return nil
 	})

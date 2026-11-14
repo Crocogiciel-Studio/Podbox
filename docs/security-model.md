@@ -13,8 +13,8 @@
 ```
 
 - **Agent container**: joins only the internal network, which has no gateway and no DNS. `/etc/resolv.conf` points at `127.0.0.1`, so no name resolves. The only reachable address is the proxy, named `proxy` in `/etc/hosts`. Host proxy variables are not forwarded (`--http-proxy=false`); podbox sets `HTTP(S)_PROXY=http://proxy:3128`.
-- **Proxy container**: the podbox binary itself (`podbox proxy serve`) in a `FROM scratch` image, read-only root, no capabilities, uid 65534. It reads the effective policy from the sandbox state directory mounted read-only and polls it every second. Nothing in the sandbox can write it: the only writer is `podbox policy` on the host.
-- **Hardening of the agent**: uid 1000 mapped to your user (`--userns=keep-id`), `--cap-drop=ALL`, `no-new-privileges`, default seccomp, never privileged, no engine socket, `/tmp` as tmpfs, CPU/RAM/PID limits when cgroup controllers are delegated (otherwise a warning). Host mounts: the project, the masks, and nothing else; the home is a named volume.
+- **Proxy container**: the podbox binary itself (`podbox proxy serve`) in a `FROM scratch` image, read-only root, no capabilities, uid 65534. It reads the effective policy from the sandbox state directory mounted read-only and polls it every second. Nothing in the sandbox can write it: the only writer is `podbox policy` on the host, and it compiles the project layer from a host-side snapshot of `.podbox/policy.yaml`, never from the agent-writable project (see [policy](policy.md#project-files-are-snapshotted)).
+- **Hardening of the agent**: uid 1000 mapped to your user (`--userns=keep-id`), `--cap-drop=ALL`, `no-new-privileges`, default seccomp, never privileged, no engine socket, `/tmp` as tmpfs, CPU/RAM/PID limits when cgroup controllers are delegated (otherwise a warning). Host mounts: the project, its `.podbox/` and `.sandboxignore` read-only when they exist, the masks, and nothing else; the home is a named volume.
 
 ## Proxy decisions
 
@@ -26,7 +26,7 @@ Each decision is logged as one JSON line on the proxy's stdout (`podman logs pod
 
 ## Workspace masking
 
-Forced, non-overridable patterns: `.env*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.kube/`, `.gnupg/`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.git/hooks/`. `.sandboxignore` adds patterns. Files are covered by a read-only bind of `/dev/null`, directories by a read-only bind of an empty directory (a tmpfs over a path inside a bind mount does not hide it). Uncovered files that look like secrets (name and entropy heuristic) produce a warning at start.
+Forced, non-overridable patterns: `.env*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.kube/`, `.gnupg/`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.git/hooks/`. `.sandboxignore` adds patterns, read from the snapshot taken at `create` or `podbox policy reload`, so the agent cannot drop its own masks. Files are covered by a read-only bind of `/dev/null`, directories by a read-only bind of an empty directory (a tmpfs over a path inside a bind mount does not hide it). Uncovered files that look like secrets (name and entropy heuristic) produce a warning at start.
 
 ## What it does not protect against
 

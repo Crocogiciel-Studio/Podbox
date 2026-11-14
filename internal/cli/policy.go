@@ -9,6 +9,7 @@ import (
 
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
+	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
 )
 
 func (a *app) policyCmd() *cobra.Command {
@@ -26,12 +27,72 @@ func (a *app) policyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			a.warnDrift(st, m)
 			e := policy.Compile(st.Sources(m))
 			return a.out.Print(e, func(w io.Writer) { printPolicy(w, e) })
 		},
 	})
-	cmd.AddCommand(a.policySetCmd("allow", true), a.policySetCmd("deny", false))
+	cmd.AddCommand(a.policySetCmd("allow", true), a.policySetCmd("deny", false), a.policyReloadCmd())
 	return cmd
+}
+
+func (a *app) warnDrift(st sandbox.Store, m sandbox.Meta) {
+	if d := st.Drift(m); len(d) > 0 {
+		a.out.Warn("%s", sandbox.DriftWarning(m.Name, d))
+	}
+}
+
+func (a *app) policyReloadCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reload <sandbox>",
+		Short: "Re-read .podbox/policy.yaml and .sandboxignore from the project after review, and apply them",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			st, _, err := a.store()
+			if err != nil {
+				return err
+			}
+			m, err := a.loadMeta(st, args[0])
+			if err != nil {
+				return err
+			}
+			c, err := st.Snapshot(m)
+			if err != nil {
+				return err
+			}
+			e, err := st.RefreshPolicy(m)
+			if err != nil {
+				return err
+			}
+			c.Warnings = append(c.Warnings, e.Warnings...)
+			for _, w := range c.Warnings {
+				a.out.Warn("%s", w)
+			}
+			res := struct {
+				Sandbox string `json:"sandbox"`
+				sandbox.Changes
+			}{m.Name, c}
+			return a.out.Print(res, func(w io.Writer) {
+				if c.Empty() {
+					fmt.Fprintf(w, "%s: project files unchanged\n", m.Name)
+					return
+				}
+				for _, l := range []struct {
+					sign, what string
+					items      []string
+				}{{"+", "rule", c.RulesAdded}, {"-", "rule", c.RulesRemoved}, {"+", "ignore", c.IgnoreAdded}, {"-", "ignore", c.IgnoreRemoved}} {
+					for _, it := range l.items {
+						fmt.Fprintf(w, "%s %s %s\n", l.sign, l.what, it)
+					}
+				}
+				fmt.Fprintf(w, "%s: policy applied", m.Name)
+				if len(c.IgnoreAdded)+len(c.IgnoreRemoved) > 0 {
+					fmt.Fprintf(w, "; masks apply at the next podbox stop + start")
+				}
+				fmt.Fprintln(w)
+			})
+		},
+	}
 }
 
 func (a *app) policySetCmd(verb string, allow bool) *cobra.Command {
@@ -49,17 +110,20 @@ func (a *app) policySetCmd(verb string, allow bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var path string
+			var paths []string
 			switch scope {
 			case policy.LayerSession:
-				path = st.SessionPath(m.Name)
+				paths = []string{st.SessionPath(m.Name)}
 			case policy.LayerProject:
-				path = policy.ProjectFile(m.Workspace)
+				// The project file for the repository, the snapshot for enforcement.
+				paths = []string{policy.ProjectFile(m.Workspace), st.ProjectPolicyPath(m.Name)}
 			default:
 				return output.Errorf(output.ExitUsage, "invalid --scope %q: want session or project", scope)
 			}
-			if err := policy.SetRule(path, args[1], allow); err != nil {
-				return output.Wrap(output.ExitUsage, err, verb)
+			for _, p := range paths {
+				if err := policy.SetRule(p, args[1], allow); err != nil {
+					return output.Wrap(output.ExitUsage, err, verb)
+				}
 			}
 			e, err := st.RefreshPolicy(m)
 			if err != nil {

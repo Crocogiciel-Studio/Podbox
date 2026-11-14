@@ -6,6 +6,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+
+	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
 )
 
 func (a *app) lsCmd() *cobra.Command {
@@ -21,6 +23,11 @@ func (a *app) lsCmd() *cobra.Command {
 			list, err := m.List(cmd.Context())
 			if err != nil {
 				return classify(err)
+			}
+			for _, s := range list {
+				if len(s.ProjectChanged) > 0 {
+					a.out.Warn("%s", sandbox.DriftWarning(s.Name, s.ProjectChanged))
+				}
 			}
 			return a.out.Print(list, func(w io.Writer) {
 				tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)

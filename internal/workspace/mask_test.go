@@ -39,12 +39,12 @@ func TestResolve(t *testing.T) {
 		"secrets/db.txt":          "pw",
 		"keep/me.txt":             "ok",
 		".docker/config.json":     "{}",
-		".sandboxignore":          "secrets/\n!.env\n",
+		".sandboxignore":          "keep/\n", // live file: ignored, the snapshot applies
 		"config/api_token.json":   `{"token":"Zx8Kq2Lm9Vb4Nw7Rt1Yh6Pd3Sg5Fj0Ac"}`,
 		"cert/store.p12":          "bin",
 		"docs/password-reset.txt": "how to reset",
 	})
-	res, err := Resolve(root)
+	res, err := Resolve(root, []byte("secrets/\n!.env\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestMaskLimit(t *testing.T) {
 	for i := 0; i <= MaxMasks; i++ {
 		files[fmt.Sprintf("k/%d.key", i)] = "k"
 	}
-	if _, err := Resolve(tree(t, files)); err == nil || !strings.Contains(err.Error(), "exceed the limit") {
+	if _, err := Resolve(tree(t, files), nil); err == nil || !strings.Contains(err.Error(), "exceed the limit") {
 		t.Fatal("limit not enforced")
 	}
 }

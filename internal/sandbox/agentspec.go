@@ -67,6 +67,7 @@ type agentInput struct {
 	Meta     Meta
 	Image    string
 	ProxyIP  string
+	ReadOnly []string // workspace paths the agent may read but not edit
 	Masks    []workspace.Mask
 	EmptyDir string
 	Limits   *runtime.Limits
@@ -84,6 +85,10 @@ func agentSpec(in agentInput) runtime.ContainerSpec {
 		{Type: runtime.Bind, Source: m.Workspace, Target: target, Relabel: in.SELinux},
 		{Type: runtime.Volume, Source: HomeVolume(m.Agent), Target: "/home/agent"},
 		{Type: runtime.Tmpfs, Target: "/tmp", Options: "rw,nosuid,nodev,size=1g"},
+	}
+	for _, rel := range in.ReadOnly {
+		p := path.Join(target, rel)
+		mounts = append(mounts, runtime.Mount{Type: runtime.Bind, Source: filepath.Join(m.Workspace, rel), Target: p, ReadOnly: true, Relabel: in.SELinux})
 	}
 	for _, mk := range in.Masks {
 		dst := path.Join(target, mk.Rel)

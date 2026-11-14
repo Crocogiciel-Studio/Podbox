@@ -44,6 +44,7 @@ From another terminal on the host:
 ```sh
 podbox policy allow claude-my-project pypi.example.org            # this sandbox, applied within a second
 podbox policy allow claude-my-project pypi.example.org --scope project   # writes .podbox/policy.yaml
+podbox policy reload claude-my-project      # apply hand edits to .podbox/policy.yaml and .sandboxignore
 podbox policy show claude-my-project
 ```
 
@@ -58,7 +59,7 @@ podbox policy show claude-my-project
 | `ls` | list sandboxes, from podman labels and the state directory |
 | `exec <name> -- <cmd>...` | run a command in the workspace, exit with its code |
 | `attach <name>` | open a new agent session in a running sandbox |
-| `policy show\|allow\|deny <name> [host]` | inspect and change the allowlist from the host |
+| `policy show\|allow\|deny\|reload <name> [host]` | inspect and change the allowlist from the host |
 | `image build <image>... [--force]` / `image ls` | build `proxy`, `base`, `claude`, `kiro`, `shell` |
 | `doctor` | check prerequisites |
 | `version` | build information |
@@ -77,7 +78,7 @@ upstream_proxy: http://user:pass@proxy.corp:3128   # default: host HTTPS_PROXY; 
 limits: { cpus: "4", memory: 8g, pids: 2048 }      # applied when cgroup controllers are delegated
 ```
 
-Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxignore` (gitignore syntax, extra masks).
+Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxignore` (gitignore syntax, extra masks). podbox reads them once at `create` and keeps a copy in the sandbox state; later edits, by you or the agent, apply only after you review them and run `podbox policy reload <name>`. Inside the sandbox they are read-only.
 
 ## Exit codes
 
