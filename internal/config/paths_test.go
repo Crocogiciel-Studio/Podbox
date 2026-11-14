@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -32,5 +33,25 @@ func TestResolve(t *testing.T) {
 				t.Fatalf("got %+v", p)
 			}
 		})
+	}
+}
+
+func TestLoadConfig(t *testing.T) {
+	dir := t.TempDir()
+	c, err := Load(dir)
+	if err != nil || c.Images.Base != DefaultBase || c.Limits.PIDs != 2048 {
+		t.Fatalf("defaults: %+v %v", c, err)
+	}
+	body := "images:\n  base: registry.corp/node:22\nca_file: corp.pem\nlimits:\n  memory: 2g\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err = Load(dir)
+	if err != nil || c.Images.Base != "registry.corp/node:22" || c.CAFile != filepath.Join(dir, "corp.pem") || c.Limits.Memory != "2g" || c.Limits.CPUs != "4" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("imagez: {}\n"), 0o644)
+	if _, err := Load(dir); err == nil {
+		t.Fatal("unknown key accepted")
 	}
 }
