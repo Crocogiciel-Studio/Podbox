@@ -2,26 +2,105 @@
 
 Run coding agents (Claude Code, Kiro) autonomously in a hardened rootless Podman sandbox whose only network egress is an allowlisting proxy.
 
-Status: v0.1 in development.
+- The agent container has no route out, no DNS, and no access to the host or its loopback services; its only exit is the sandbox proxy.
+- The proxy allows only listed hosts (deny by default) and answers refusals with a message the agent can read and relay.
+- The project is mounted read-write; secrets (`.env*`, keys, `.ssh/`, `.git/hooks/`, ...) are always hidden.
+- The agent login persists in a per-agent volume, never in your `$HOME`.
 
-## Build
+Status: v0.1. See [security model](docs/security-model.md) and [policy reference](docs/policy.md).
+
+## Install
+
+Requirements: rootless Podman 4.4+ (on macOS/Windows, a running `podman machine`). No Docker, no root.
 
 ```sh
-make build        # bin/podbox
+make build                 # bin/podbox (static, CGO_ENABLED=0)
+sudo install bin/podbox /usr/local/bin/
+podbox doctor              # every check ok or warn; each failure prints its fix
 ```
+
+Release builds for macOS and Windows embed the Linux proxy binary (`make cross-embed`) so the proxy image builds without any registry.
+
+## Quick start
+
+```sh
+cd ~/code/my-project
+podbox run claude          # builds images on first use, then opens Claude Code
+```
+
+`run` creates the sandbox `claude-my-project` if needed, starts it and opens `claude --dangerously-skip-permissions` in the project directory. Log in once; the next `run` reuses the session.
+
+Other agents: `podbox run kiro` (experimental, unverified), `podbox run shell` (bash, for inspection).
+
+When the agent hits a host outside the allowlist it receives:
+
+```
+Blocked by podbox network policy: host "pypi.example.org" is not allowed.
+Ask the user to run: podbox policy allow claude-my-project pypi.example.org
+```
+
+From another terminal on the host:
+
+```sh
+podbox policy allow claude-my-project pypi.example.org            # this sandbox, applied within a second
+podbox policy allow claude-my-project pypi.example.org --scope project   # writes .podbox/policy.yaml
+podbox policy show claude-my-project
+```
+
+## Commands
+
+| Command | Role |
+| --- | --- |
+| `run <agent> [path] [--name]` | create if absent, start, open an agent session |
+| `create <agent> [path] [--name]` | create a sandbox without starting it |
+| `start <name>` / `stop <name>` | start (recreating stopped containers with fresh masks) / stop |
+| `rm <name> [--volumes]` | remove containers, network and state; `--volumes` also drops the agent login |
+| `ls` | list sandboxes, from podman labels and the state directory |
+| `exec <name> -- <cmd>...` | run a command in the workspace, exit with its code |
+| `attach <name>` | open a new agent session in a running sandbox |
+| `policy show\|allow\|deny <name> [host]` | inspect and change the allowlist from the host |
+| `image build <image>... [--force]` / `image ls` | build `proxy`, `base`, `claude`, `kiro`, `shell` |
+| `doctor` | check prerequisites |
+| `version` | build information |
+
+Every command accepts `--output json` (`-o json`).
+
+## Configuration
+
+`~/.config/podbox/config.yaml` (`PODBOX_HOME` relocates config and state):
+
+```yaml
+images:
+  base: registry.corp.example/node:22-bookworm-slim   # Debian-based; default docker.io/library/node:22-bookworm-slim
+ca_file: corp-ca.pem          # trusted in agent images when your proxy intercepts TLS
+upstream_proxy: http://user:pass@proxy.corp:3128   # default: host HTTPS_PROXY; "none" disables
+limits: { cpus: "4", memory: 8g, pids: 2048 }      # applied when cgroup controllers are delegated
+```
+
+Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxignore` (gitignore syntax, extra masks).
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | 0 | success |
-| 1 | generic error |
-| 2 | usage error (bad flag, argument or `--output` value) |
+| 1 | generic error (sandbox exists, sandbox not running, ...) |
+| 2 | usage error (bad flag, argument, agent or `--output` value) |
 | 3 | prerequisite missing (see `podbox doctor`) |
-| 4 | not found (sandbox, image) |
+| 4 | not found (sandbox) |
 | 5 | runtime error (podman failed) |
 
 `exec`, `attach` and `run` exit with the inner command's code. With `--output json`, errors are printed on stdout as `{"error":{"code":<exit code>,"kind":"...","message":"..."}}`.
+
+## Known limits
+
+- Containers share the host kernel; a kernel exploit escapes the sandbox.
+- Allowlisted hosts are an exfiltration channel: allow only what the task needs.
+- HTTPS is not decrypted in v0.1: rules apply to host names only, and refusals of `CONNECT` requests are a bare `403` for most clients (plain-HTTP requests show the message).
+- Behind a TLS-intercepting corporate proxy, the agent sees and trusts the corporate CA.
+- Masks are resolved when the agent container is (re)created; files created later are not masked until `stop` + `start`. Writes into masked directories are refused.
+- Only HTTP(S) leaves the sandbox: no SSH git remotes, no databases.
+- macOS and Windows are designed for but not tested in CI.
 
 ## License
 

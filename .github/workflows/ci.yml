@@ -18,3 +18,29 @@ jobs:
       - run: make lint
       - run: make test
       - run: make cross
+
+  e2e:
+    runs-on: ubuntu-24.04
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install rootless podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns passt netavark aardvark-dns jq
+          mkdir -p ~/.config/containers
+          printf '[network]\nnetwork_backend = "netavark"\n' > ~/.config/containers/containers.conf
+          podman system reset --force
+          podman info --format '{{.Host.NetworkBackend}} {{.Host.Security.Rootless}} {{.Version.Version}}'
+      - run: make build
+      - name: podbox doctor
+        run: bin/podbox doctor
+      - name: Evasion suite
+        run: PODBOX=$PWD/bin/podbox test/e2e/evasion.sh
+        env:
+          E2E_EXTRA_HOST: example.com
+      - name: Lifecycle suite
+        run: PODBOX=$PWD/bin/podbox test/e2e/lifecycle.sh
