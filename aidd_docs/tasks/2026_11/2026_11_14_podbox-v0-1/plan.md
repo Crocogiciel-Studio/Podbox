@@ -1,6 +1,6 @@
 ---
 objective: "podbox runs Claude Code or Kiro autonomously in a hardened rootless Podman sandbox whose only egress is an allowlisting proxy, with every evasion test failing in Linux CI."
-status: pending
+status: in-progress
 ---
 
 # Plan: Podbox M0 + v0.1 — closed-network sandbox
