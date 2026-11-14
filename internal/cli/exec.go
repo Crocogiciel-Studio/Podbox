@@ -19,7 +19,9 @@ func (a *app) execCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return exitWith(m.Exec(cmd.Context(), args[0], args[1:], terminal()))
+			code, err := m.Exec(cmd.Context(), args[0], args[1:], terminal())
+			a.gitCheck(m, args[0])
+			return exitWith(code, err)
 		},
 	}
 }
@@ -34,7 +36,9 @@ func (a *app) attachCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return exitWith(m.Attach(cmd.Context(), args[0], terminal()))
+			code, err := m.Attach(cmd.Context(), args[0], terminal())
+			a.gitCheck(m, args[0])
+			return exitWith(code, err)
 		},
 	}
 }

@@ -51,6 +51,8 @@ type Status struct {
 	StateDir  bool   `json:"state_dir"`
 	// ProjectChanged lists project files edited since the last snapshot.
 	ProjectChanged []string `json:"project_changed,omitempty"`
+	// GitIntegrity compares the workspace's .git with its fingerprint.
+	GitIntegrity *GitIntegrity `json:"git_integrity,omitempty"`
 }
 
 // Create builds images if needed and creates the sandbox's objects.
@@ -104,6 +106,9 @@ func (m *Manager) Create(ctx context.Context, name, agentName, ws string) (meta 
 	}
 	for _, w := range c.Warnings {
 		m.Warn("%s", w)
+	}
+	if err = m.Store.RecordGit(meta); err != nil {
+		return meta, err
 	}
 	if err = m.refreshPolicy(meta); err != nil {
 		return meta, err
@@ -212,6 +217,11 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	}
 	if err := workspace.CheckRoot(meta.Workspace, m.Home, m.Owned); err != nil {
 		return err
+	}
+	if !m.Store.HasGitPrint(name) { // sandboxes created before fingerprints existed
+		if err := m.Store.RecordGit(meta); err != nil {
+			return err
+		}
 	}
 	if err := m.refreshPolicy(meta); err != nil {
 		return err
@@ -334,6 +344,11 @@ func (m *Manager) List(ctx context.Context) ([]Status, error) {
 			s := get(meta.Name)
 			s.StateDir = true
 			s.ProjectChanged = m.Store.Drift(meta)
+			if g, err := m.Store.CheckGit(meta); err != nil {
+				m.Warn("%s: git integrity check failed: %v", meta.Name, err)
+			} else {
+				s.GitIntegrity = g
+			}
 			if s.Agent == "" {
 				s.Agent, s.Workspace = meta.Agent, meta.Workspace
 			}

@@ -90,6 +90,29 @@ check ".git/config unchanged on the host" test "$(sha256sum <"$PROJ/.git/config"
 check "git commit still works in the sandbox" sx "$NAME" "git add src/readme.txt && GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@e2e GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@e2e git commit -qm agent"
 check "agent commit visible on the host" test "$(git -C "$PROJ" log -1 --format=%s 2>/dev/null)" = agent
 
+echo "== git directory integrity"
+GITENV="GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@e2e GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@e2e"
+tampering() { grep -q "GIT DIRECTORY TAMPERING SUSPECTED" <<<"$1"; }
+commit_quiet() { local err; err=$(sx "$NAME" "echo more >>src/readme.txt && git checkout -qb e2e-branch && $GITENV git commit -qam agent2" 2>&1 >/dev/null) || return 1; ! tampering "$err"; }
+git_check_code() { pb git-check "$NAME" >/dev/null 2>&1; echo $?; }
+ls_tampering() { tampering "$(pb ls 2>&1 >/dev/null)"; }
+ls_json_flags() { pb ls -o json 2>/dev/null | jq -e ".[] | select(.name == \"$NAME\") | .git_integrity.ok == false and (.git_integrity.findings[0].path == \".git/commondir\")" >/dev/null; }
+check "normal commit and branch in the sandbox print no git warning" commit_quiet
+blocked "ls warns after a normal commit" ls_tampering
+check "git-check exits 0 after a normal commit" test "$(git_check_code)" = 0
+check "agent writes .git/commondir" sx "$NAME" "echo /tmp/evil >'$PROJ/.git/commondir'"
+check "ls warns about .git/commondir" ls_tampering
+check "ls JSON reports git_integrity.ok false with the path" ls_json_flags
+check "git-check exits 6" test "$(git_check_code)" = 6
+stop_out=$(pb stop "$NAME" -o json 2>"$WORK/stop.err")
+check "stop warns about .git/commondir" tampering "$(cat "$WORK/stop.err")"
+check "stop JSON reports git_integrity.ok false" jq -e '.git_integrity.ok == false' >/dev/null <<<"$stop_out"
+rm -f "$PROJ/.git/commondir"
+check "git-check --accept re-records" sh -c "'$PODBOX' git-check '$NAME' --accept >/dev/null"
+check "git-check exits 0 after removal and accept" test "$(git_check_code)" = 0
+blocked "ls warns after accept" ls_tampering
+pb start "$NAME" >/dev/null 2>&1
+
 echo "== refused workspaces"
 refused_usage() { local err; err=$("$@" 2>&1 >/dev/null); [ $? -eq 2 ] && grep -q "unsafe workspace" <<<"$err"; }
 mkdir -p "$WORK/fakehome"

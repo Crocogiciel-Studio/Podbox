@@ -37,6 +37,16 @@ Both sides are compared after resolving symbolic links, so a link to a refused d
 
 Forced, non-overridable patterns: `.env*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.kube/`, `.gnupg/`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.git/hooks/`, and `.git/config` mounted read-only (it can name `core.hooksPath`, `core.fsmonitor` or filter commands that git on the host would run). `.git` is bound on itself so it cannot be renamed and replaced. Objects, refs, index and `HEAD` stay writable, so the agent can still commit; `git config` fails inside the sandbox. `.sandboxignore` adds patterns, read from the snapshot taken at `create` or `podbox policy reload`, so the agent cannot drop its own masks. Files are covered by a read-only bind of `/dev/null`, directories by a read-only bind of an empty directory (a tmpfs over a path inside a bind mount does not hide it). Uncovered files that look like secrets (name and entropy heuristic) produce a warning at start.
 
+## Git directory integrity
+
+The agent must write `.git` to commit, and git on the host trusts what it finds there. Some writes make host git run commands or read another repository, and cannot be masked without breaking git: `.git/commondir` pointing at a config the agent controls (its `core.fsmonitor` runs on the next `git status`), `config.worktree`, `objects/info/alternates`, `info/*`, symbolic links (including `HEAD` or refs) pointing outside `.git`, unexpected new top-level entries, submodule configs and hooks under `.git/modules/`, a pending rebase with `exec` lines, or a `.git` created or repointed in the sandbox.
+
+podbox detects these, it does not prevent them. At `create` (or the first `start` of an older sandbox) it records a fingerprint of `.git` in the sandbox state: its kind, top-level entries, the sha256 of the files above and every symbolic link. Normal churn (objects, refs, logs, index, `HEAD` content, `ORIG_HEAD`, `FETCH_HEAD`, `packed-refs`, worktrees, ...) is left out, so commits, branches, checkouts, rebases, stashes and gc raise nothing.
+
+The live `.git` is compared with the fingerprint after `run`, `attach` and `exec` return, and on `start`, `stop`, `rm` and `ls`. Any difference prints a warning on stderr listing each path and why it matters, and adds `git_integrity` (`ok`, `findings`) to the JSON output; exit codes are unchanged. `podbox git-check <name>` runs the comparison alone and exits 6 on findings. On a warning, do not run git in that repository until you have reviewed the listed paths; remove what you did not create, then `podbox git-check <name> --accept` re-records the fingerprint. A change you made yourself on the host (for example `git remote add`, which rewrites `.git/config`) is reported too and needs the same acceptance.
+
+The check runs when podbox does: a git command you run on the host before any podbox command is not protected. For untrusted work, prefer the upcoming `--clone` mode, which keeps the agent away from the host repository's git directory.
+
 ## What it does not protect against
 
 - Kernel or runtime exploits: containers share the host kernel.
@@ -44,5 +54,5 @@ Forced, non-overridable patterns: `.env*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.
 - A TLS-intercepting corporate proxy: its CA is visible to and trusted by the agent (hiding it needs TLS interception in the sandbox, planned for v0.2).
 - Files created in the project after the agent container was created are not masked until it is recreated (`stop` + `start`).
 - Code the agent writes into the project runs on the host when you run it; review changes before executing them.
-- Other git directory files stay writable: an agent can write `.git/commondir` to point git at a config it controls, which host git would then run (fsmonitor, hooks path). Masking it would break git; before running git on the host after a session, check that `.git/commondir` does not exist in a repository that is not a worktree.
-- When `.git` is a file (a worktree or a submodule), the git directory it points to is outside the workspace and its hooks and config are not protected; podbox warns at start. Its `.git` pointer itself stays agent-writable, so review it before running git on the host.
+- Other git directory files stay writable: an agent can write `.git/commondir` and similar files that make host git run its commands. podbox detects them after the session (see [git directory integrity](#git-directory-integrity)) but does not block them.
+- When `.git` is a file (a worktree or a submodule), the git directory it points to is outside the workspace and its hooks and config are not protected; podbox warns at start. Its `.git` pointer itself stays agent-writable; a change to it is reported by the git integrity check.

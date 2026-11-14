@@ -28,6 +28,9 @@ func (a *app) lsCmd() *cobra.Command {
 				if len(s.ProjectChanged) > 0 {
 					a.out.Warn("%s", sandbox.DriftWarning(s.Name, s.ProjectChanged))
 				}
+				if s.GitIntegrity != nil && !s.GitIntegrity.OK {
+					a.out.Warn("%s", sandbox.GitWarning(sandbox.Meta{Name: s.Name, Workspace: s.Workspace}, *s.GitIntegrity))
+				}
 			}
 			return a.out.Print(list, func(w io.Writer) {
 				tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)

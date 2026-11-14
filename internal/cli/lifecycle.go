@@ -49,12 +49,31 @@ func classify(err error) error {
 }
 
 type actionResult struct {
-	Name   string `json:"name"`
-	Action string `json:"action"`
+	Name         string                `json:"name"`
+	Action       string                `json:"action"`
+	GitIntegrity *sandbox.GitIntegrity `json:"git_integrity,omitempty"`
 }
 
-func (a *app) done(name, action string) error {
-	return a.out.Print(actionResult{name, action}, func(w io.Writer) { fmt.Fprintf(w, "%s %s\n", name, action) })
+func (a *app) done(name, action string, g *sandbox.GitIntegrity) error {
+	return a.out.Print(actionResult{name, action, g}, func(w io.Writer) { fmt.Fprintf(w, "%s %s\n", name, action) })
+}
+
+// gitCheck compares the sandbox's .git with its fingerprint and warns on
+// findings; nil when there is nothing to compare. It never fails the command.
+func (a *app) gitCheck(m *sandbox.Manager, name string) *sandbox.GitIntegrity {
+	meta, err := m.Store.Load(name)
+	if err != nil {
+		return nil
+	}
+	g, err := m.Store.CheckGit(meta)
+	if err != nil {
+		a.out.Warn("%s: git integrity check failed: %v", name, err)
+		return nil
+	}
+	if g != nil && !g.OK {
+		a.out.Warn("%s", sandbox.GitWarning(meta, *g))
+	}
+	return g
 }
 
 // simple builds start/stop: one sandbox name, one manager call.
@@ -69,7 +88,7 @@ func (a *app) simple(use, short, action string, do func(*sandbox.Manager, contex
 			if err := do(m, cmd.Context(), args[0]); err != nil {
 				return classify(err)
 			}
-			return a.done(args[0], action)
+			return a.done(args[0], action, a.gitCheck(m, args[0]))
 		},
 	}
 }
@@ -85,14 +104,15 @@ func (a *app) lifecycleCmds() []*cobra.Command {
 			if err != nil {
 				return err
 			}
+			g := a.gitCheck(m, args[0]) // before the fingerprint is deleted
 			if err := m.Remove(cmd.Context(), args[0], volumes); err != nil {
 				return classify(err)
 			}
-			return a.done(args[0], "removed")
+			return a.done(args[0], "removed", g)
 		},
 	}
 	rm.Flags().BoolVar(&volumes, "volumes", false, "also remove the agent home volume (loses agent login)")
-	return []*cobra.Command{start, stop, rm}
+	return []*cobra.Command{start, stop, rm, a.gitCheckCmd()}
 }
 
 func isTerminal(f *os.File) bool {

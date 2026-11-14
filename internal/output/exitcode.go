@@ -13,14 +13,17 @@ const (
 	ExitPrereq   = 3
 	ExitNotFound = 4
 	ExitRuntime  = 5
+	// ExitGitIntegrity: podbox git-check found suspicious .git changes.
+	ExitGitIntegrity = 6
 )
 
 var kinds = map[int]string{
-	ExitGeneric:  "generic",
-	ExitUsage:    "usage",
-	ExitPrereq:   "prerequisite",
-	ExitNotFound: "not_found",
-	ExitRuntime:  "runtime",
+	ExitGeneric:      "generic",
+	ExitUsage:        "usage",
+	ExitPrereq:       "prerequisite",
+	ExitNotFound:     "not_found",
+	ExitRuntime:      "runtime",
+	ExitGitIntegrity: "git_integrity",
 }
 
 // Error is an error carrying its exit code.

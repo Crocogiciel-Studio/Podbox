@@ -4,7 +4,7 @@ Run coding agents (Claude Code, Kiro) autonomously in a hardened rootless Podman
 
 - The agent container has no route out, no DNS, and no access to the host or its loopback services; its only exit is the sandbox proxy.
 - The proxy allows only listed hosts (deny by default) and answers refusals with a message the agent can read and relay.
-- The project is mounted read-write; secrets (`.env*`, keys, `.ssh/`, `.git/hooks/`, ...) are always hidden. `.git/config` is read-only. Your home directory and podbox's own config/state directories are refused as workspaces.
+- The project is mounted read-write; secrets (`.env*`, keys, `.ssh/`, `.git/hooks/`, ...) are always hidden. `.git/config` is read-only, and other `.git` changes that git on the host could execute are reported after each session. Your home directory and podbox's own config/state directories are refused as workspaces.
 - The agent login persists in a per-agent volume, never in your `$HOME`.
 
 Status: v0.1. See [security model](docs/security-model.md) and [policy reference](docs/policy.md).
@@ -59,6 +59,7 @@ podbox policy show claude-my-project
 | `ls` | list sandboxes, from podman labels and the state directory |
 | `exec <name> -- <cmd>...` | run a command in the workspace, exit with its code |
 | `attach <name>` | open a new agent session in a running sandbox |
+| `git-check <name> [--accept]` | compare `.git` with the fingerprint taken at creation, exit 6 on suspicious changes; `--accept` re-records it |
 | `policy show\|allow\|deny\|reload <name> [host]` | inspect and change the allowlist from the host |
 | `image build <image>... [--force]` / `image ls` | build `proxy`, `base`, `claude`, `kiro`, `shell` |
 | `doctor` | check prerequisites |
@@ -90,8 +91,9 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 | 3 | prerequisite missing (see `podbox doctor`) |
 | 4 | not found (sandbox) |
 | 5 | runtime error (podman failed) |
+| 6 | `git-check` found suspicious `.git` changes |
 
-`exec`, `attach` and `run` exit with the inner command's code. With `--output json`, errors are printed on stdout as `{"error":{"code":<exit code>,"kind":"...","message":"..."}}`.
+`exec`, `attach` and `run` exit with the inner command's code. A suspicious `.git` change only prints a warning on these and on `start`, `stop`, `rm` and `ls` (and adds `git_integrity` to their JSON); see [git directory integrity](docs/security-model.md#git-directory-integrity). With `--output json`, errors are printed on stdout as `{"error":{"code":<exit code>,"kind":"...","message":"..."}}`.
 
 ## Known limits
 
