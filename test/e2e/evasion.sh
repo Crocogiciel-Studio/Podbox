@@ -12,6 +12,8 @@ NAME=e2e
 UPNAME=e2e-up
 MVNAME=e2e-mv
 HKNAME=e2e-hooks
+MKNAME=e2e-masks
+WTNAME=e2e-wt
 UPSTREAM_CTR=podbox-e2e-upstream
 WORK=$(mktemp -d)
 PROJ=$WORK/project
@@ -23,6 +25,8 @@ cleanup() {
 	pb rm "$UPNAME" >/dev/null 2>&1
 	pb rm "$MVNAME" >/dev/null 2>&1
 	pb rm "$HKNAME" >/dev/null 2>&1
+	pb rm "$MKNAME" >/dev/null 2>&1
+	pb rm "$WTNAME" >/dev/null 2>&1
 	pb rm e2e-home >/dev/null 2>&1
 	pb rm "$NAME" --volumes >/dev/null 2>&1
 	rm -rf "$WORK" "$PODBOX_HOME"
@@ -115,7 +119,9 @@ check "ls JSON reports git_integrity.ok false with the path" ls_json_flags
 check "git-check exits 6" test "$(git_check_code)" = 6
 stop_out=$(pb stop "$NAME" -o json 2>"$WORK/stop.err")
 check "stop warns about .git/commondir" tampering "$(cat "$WORK/stop.err")"
-check "stop JSON reports git_integrity.ok false" jq -e '.git_integrity.ok == false' >/dev/null <<<"$stop_out"
+check "stop JSON reports git_integrity.ok false" jqe '.git_integrity.ok == false' <<<"$stop_out"
+check "stop prints the git warning once" test "$(grep -c 'GIT DIRECTORY TAMPERING SUSPECTED' "$WORK/stop.err")" = 1
+check "git-check prints the git warning once" test "$(pb git-check "$NAME" 2>&1 >/dev/null | grep -c 'GIT DIRECTORY TAMPERING SUSPECTED')" = 1
 rm -f "$PROJ/.git/commondir"
 check "git-check --accept re-records" sh -c "'$PODBOX' git-check '$NAME' --accept >/dev/null"
 check "git-check exits 0 after removal and accept" test "$(git_check_code)" = 0
@@ -130,7 +136,7 @@ hook_info() { grep -q "info: $HKNAME: this project runs code from .husky/ on you
 hk_check() { pb git-check "$HKNAME" >"$WORK/hk.out" 2>&1; echo $?; }
 create_json=$(pb create shell "$HK" --name "$HKNAME" -o json 2>"$WORK/hk.err")
 check "create prints the hook info line" hook_info "$(cat "$WORK/hk.err")"
-check "create JSON carries the hook info" jq -e '.info | test("runs code from .husky/")' >/dev/null <<<"$create_json"
+check "create JSON carries the hook info" jqe '.info | test("runs code from .husky/")' <<<"$create_json"
 check "start prints the hook info line" hook_info "$(pb start "$HKNAME" 2>&1 >/dev/null)"
 blocked "launch without hook files prints the info line" sh -c "'$PODBOX' start '$NAME' 2>&1 | grep -q 'runs code from'"
 check "absent .git/hooks not created on the host" test ! -e "$HK/.git/hooks"
@@ -144,6 +150,45 @@ check "agent creates .git/hooks/ (absent at start)" sx "$HKNAME" "mkdir .git/hoo
 check "git-check exits 6 on the created hook" test "$(hk_check)" = 6
 check "git-check names .git/hooks/post-commit" grep -q "  .git/hooks/post-commit: appeared" "$WORK/hk.out"
 pb rm "$HKNAME" >/dev/null 2>&1
+
+echo "== masks follow renamed parent directories"
+MK=$WORK/masked
+mkdir -p "$MK/config" "$MK/secret" "$MK/.docker" "$MK/.podbox"
+echo 'prod-secret' >"$MK/config/prod.yaml"
+echo 'data-secret' >"$MK/secret/data.txt"
+echo 'docker-secret' >"$MK/.docker/config.json"
+printf '/config/prod.yaml\nsecret/data.txt\n' >"$MK/.sandboxignore"
+printf 'rules:\n  - host: %s\n    allow: true\n' "$ATTACK" >"$MK/.podbox/policy.yaml"
+mk_json=$(pb create shell "$MK" --name "$MKNAME" -o json 2>"$WORK/mk.err")
+check "create prints each imported project rule" grep -q "$MKNAME: imported rule from .podbox/policy.yaml: allow $ATTACK" "$WORK/mk.err"
+check "create prints each imported .sandboxignore pattern" grep -q "$MKNAME: imported .sandboxignore pattern: /config/prod.yaml" "$WORK/mk.err"
+check "create JSON lists the imports" jqe --arg r "allow $ATTACK" '(.imported.rules | index($r)) != null and (.imported.ignore | length) == 2' <<<"$mk_json"
+pb start "$MKNAME" >/dev/null 2>&1
+check "masked files hidden before the rename" sx "$MKNAME" "[ ! -s config/prod.yaml ] && [ ! -s secret/data.txt ] && [ ! -s .docker/config.json ]"
+check "agent renames the parents of masked files" sx "$MKNAME" "mv config config2 && mv secret s2 && mv .docker dk2"
+pb stop "$MKNAME" >/dev/null 2>&1
+pb start "$MKNAME" >/dev/null 2>"$WORK/mk.start"
+for mv in "config/prod.yaml -> config2/prod.yaml" "secret/data.txt -> s2/data.txt" ".docker/config.json -> dk2/config.json"; do
+	check "start warns: $mv" grep -qF "  $mv (still masked)" "$WORK/mk.start"
+done
+check "start warning is loud" grep -q "MASKED PATHS MOVED OR MISSING" "$WORK/mk.start"
+for f in config2/prod.yaml s2/data.txt dk2/config.json; do
+	blocked "read $f after rename + stop/start" sx "$MKNAME" "grep -q secret $f"
+done
+check "renamed secrets intact on the host" grep -q prod-secret "$MK/config2/prod.yaml"
+pb rm "$MKNAME" >/dev/null 2>&1
+
+echo "== linked worktree git directory"
+WTP=$WORK/wtmain
+git init -q "$WTP" && git -C "$WTP" -c user.name=a -c user.email=a@e2e commit -q --allow-empty -m init
+git -C "$WTP" worktree add -q ../wt 2>/dev/null
+wt_check() { pb git-check "$WTNAME" >"$WORK/wt.out" 2>&1; echo $?; }
+pb create shell "$WTP" --name "$WTNAME" >/dev/null 2>&1 && pb start "$WTNAME" >/dev/null 2>&1
+check "git-check exits 0 with a host linked worktree" test "$(wt_check)" = 0
+check "agent plants a git directory and repoints the worktree commondir" sx "$WTNAME" "mkdir -p evil/objects evil/refs && echo 'ref: refs/heads/main' >evil/HEAD && printf '[core]\n\tfsmonitor = touch /tmp/pwned\n' >evil/config && echo ../../../evil >.git/worktrees/wt/commondir"
+check "git-check exits 6 on the worktree commondir" test "$(wt_check)" = 6
+check "git-check names .git/worktrees/wt/commondir" grep -q "  .git/worktrees/wt/commondir: changed" "$WORK/wt.out"
+pb rm "$WTNAME" >/dev/null 2>&1
 
 echo "== refused workspaces"
 refused_usage() { local err; err=$("$@" 2>&1 >/dev/null); [ $? -eq 2 ] && grep -q "unsafe workspace" <<<"$err"; }
@@ -161,6 +206,11 @@ echo "== privileges"
 check "uid 1000" test "$(sx "$NAME" 'id -u')" = 1000
 check "no effective capabilities" test "$(sx "$NAME" "awk '/^CapEff/ {print \$2}' /proc/self/status")" = 0000000000000000
 check "no_new_privs set" test "$(sx "$NAME" "awk '/^NoNewPrivs/ {print \$2}' /proc/self/status")" = 1
+
+echo "== ports"
+port_denied() { sx "$NAME" "curl -s -o /dev/null --max-time 10 http://$ALLOWED:22/"; podman logs "podbox-$NAME-proxy" 2>&1 | grep -q "\"host\":\"$ALLOWED\",\"port\":\"22\",\"decision\":\"deny\",\"reason\":\"policy\""; }
+check "allowed host on port 22 denied by podbox (decision log)" port_denied
+check "port refusal names the --port fix" grep -q "podbox policy allow $NAME $ALLOWED --port 22" <<<"$(sx "$NAME" "curl -s --max-time 10 http://$ALLOWED:22/")"
 
 echo "== allowlist and hot reload"
 body=$(sx "$NAME" "curl -s --max-time 10 http://$EXTRA/")

@@ -27,6 +27,9 @@ blocked() {
 
 pb() { "$PODBOX" "$@"; }
 
+# jqe <jq args...>: jq -e on stdin, quiet (a redirect on check would hide its result).
+jqe() { jq -e "$@" >/dev/null; }
+
 # sx <sandbox> <shell snippet>: run a snippet in the sandbox, stdin closed.
 sx() {
 	local name=$1

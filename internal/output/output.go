@@ -30,6 +30,7 @@ type Printer struct {
 	Mode Mode
 	Out  io.Writer
 	Err  io.Writer
+	seen map[string]bool // warnings already written
 }
 
 // Print writes v as JSON, or calls text in text mode.
@@ -43,9 +44,17 @@ func (p *Printer) Print(v any, text func(w io.Writer)) error {
 	return nil
 }
 
-// Warn writes a warning to stderr in both modes.
+// Warn writes a warning to stderr in both modes, once per invocation.
 func (p *Printer) Warn(format string, a ...any) {
-	fmt.Fprintf(p.Err, "warning: "+format+"\n", a...)
+	msg := fmt.Sprintf(format, a...)
+	if p.seen[msg] {
+		return
+	}
+	if p.seen == nil {
+		p.seen = map[string]bool{}
+	}
+	p.seen[msg] = true
+	fmt.Fprintf(p.Err, "warning: %s\n", msg)
 }
 
 // Info writes progress to stderr so stdout stays machine-readable.

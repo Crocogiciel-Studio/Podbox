@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -168,12 +169,13 @@ func (s *Server) authorize(ctx context.Context, w http.ResponseWriter, method, h
 	rt := route{host: host, port: port}
 	d := decision{Method: method, Host: host, Port: port, Decision: "deny"}
 	if !s.cfg.AllowAll {
-		pd := s.policy.Load().Decide(host)
+		pn, _ := strconv.Atoi(port) // an invalid port is 0, which no rule covers
+		pd := s.policy.Load().Decide(host, pn)
 		d.Rule, d.Layer = pd.Reason()
 		if !pd.Allow {
 			d.Reason = "policy"
 			s.logDecision(d)
-			writeNotAllowed(w, s.sandboxName(), host)
+			writeNotAllowed(w, s.sandboxName(), host, pn)
 			return rt, false
 		}
 		var err error

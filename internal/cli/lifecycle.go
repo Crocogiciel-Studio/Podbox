@@ -53,10 +53,12 @@ type actionResult struct {
 	Action       string                `json:"action"`
 	GitIntegrity *sandbox.GitIntegrity `json:"git_integrity,omitempty"`
 	Info         string                `json:"info,omitempty"`
+	// Imported lists what create took from the project files.
+	Imported *sandbox.Imported `json:"imported,omitempty"`
 }
 
 func (a *app) done(name, action string, g *sandbox.GitIntegrity, info string) error {
-	return a.out.Print(actionResult{name, action, g, info}, func(w io.Writer) { fmt.Fprintf(w, "%s %s\n", name, action) })
+	return a.out.Print(actionResult{Name: name, Action: action, GitIntegrity: g, Info: info}, func(w io.Writer) { fmt.Fprintf(w, "%s %s\n", name, action) })
 }
 
 // hookNotice prints, once per launch, which worktree files define git
@@ -86,7 +88,7 @@ func (a *app) gitCheck(m *sandbox.Manager, name string) *sandbox.GitIntegrity {
 		return nil
 	}
 	if g != nil && !g.OK {
-		a.out.Warn("%s", sandbox.GitWarning(meta, *g))
+		a.out.Warn("%s", sandbox.GitWarning(meta.Workspace, *g, meta.Name))
 	}
 	return g
 }

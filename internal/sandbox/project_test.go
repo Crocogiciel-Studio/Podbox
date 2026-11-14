@@ -28,7 +28,7 @@ func allows(t *testing.T, st Store, m Meta, host string) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return e.Decide(host).Allow
+	return e.Decide(host, 443).Allow
 }
 
 func TestSnapshotIgnoresLiveEditsUntilReload(t *testing.T) {
@@ -168,7 +168,7 @@ func TestGitHooksReadOnly(t *testing.T) {
 	if ro := readOnlyProject(repo); !reflect.DeepEqual(ro, want) {
 		t.Fatalf("read-only %v, want %v", ro, want)
 	}
-	res, err := workspace.Resolve(repo, nil)
+	res, err := workspace.Resolve(repo, nil, nil)
 	if err != nil || len(res.Masks) != 0 {
 		t.Fatalf("hooks masked: %+v %v", res.Masks, err)
 	}

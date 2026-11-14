@@ -79,7 +79,7 @@ upstream_proxy: http://user:pass@proxy.corp:3128   # default: host HTTPS_PROXY; 
 limits: { cpus: "4", memory: 8g, pids: 2048 }      # applied when cgroup controllers are delegated
 ```
 
-Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxignore` (gitignore syntax, extra masks). podbox reads them once at `create` and keeps a copy in the sandbox state; later edits, by you or the agent, apply only after you review them and run `podbox policy reload <name>`. Inside the sandbox they are read-only.
+Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxignore` (gitignore syntax, extra masks). podbox reads them once at `create`, printing each imported rule and pattern, and keeps a copy in the sandbox state; later edits, by you or the agent, apply only after you review them and run `podbox policy reload <name>`. Inside the sandbox they are read-only.
 
 ## Exit codes
 
@@ -101,7 +101,8 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 - Allowlisted hosts are an exfiltration channel: allow only what the task needs.
 - HTTPS is not decrypted in v0.1: rules apply to host names only, and refusals of `CONNECT` requests are a bare `403` for most clients (plain-HTTP requests show the message).
 - Behind a TLS-intercepting corporate proxy, the agent sees and trusts the corporate CA.
-- Masks are resolved when the agent container is (re)created; files created later are not masked until `stop` + `start`. Writes into masked directories are refused.
+- Masks are resolved when the agent container is (re)created; files created later are not masked until `stop` + `start`. Writes into masked directories are refused. Masks follow their files when a parent directory is renamed (inode tracking; not on Windows hosts).
+- An allowlisted host is reachable on ports 80 and 443 only; list other ports with `ports:` on the rule or `podbox policy allow <name> <host> --port N`.
 - Only HTTP(S) leaves the sandbox: no SSH git remotes, no databases.
 - macOS and Windows are designed for but not tested in CI.
 

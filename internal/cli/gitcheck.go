@@ -41,7 +41,7 @@ func (a *app) gitCheckCmd() *cobra.Command {
 				return err
 			}
 			if !g.OK {
-				a.out.Warn("%s", sandbox.GitWarning(meta, *g))
+				a.out.Warn("%s", sandbox.GitWarning(meta.Workspace, *g, meta.Name))
 			}
 			err = a.out.Print(gitCheckResult{meta.Name, accept, g}, func(w io.Writer) {
 				switch {

@@ -73,12 +73,14 @@ type Changes struct {
 	RulesRemoved  []string `json:"rules_removed"`
 	IgnoreAdded   []string `json:"ignore_added"`
 	IgnoreRemoved []string `json:"ignore_removed"`
-	Warnings      []string `json:"warnings,omitempty"`
+	// MasksDropped lists the recorded masks policy reload forgot.
+	MasksDropped []string `json:"masks_dropped,omitempty"`
+	Warnings     []string `json:"warnings,omitempty"`
 }
 
 // Empty reports no change.
 func (c Changes) Empty() bool {
-	return len(c.RulesAdded)+len(c.RulesRemoved)+len(c.IgnoreAdded)+len(c.IgnoreRemoved) == 0
+	return len(c.RulesAdded)+len(c.RulesRemoved)+len(c.IgnoreAdded)+len(c.IgnoreRemoved)+len(c.MasksDropped) == 0
 }
 
 // Snapshot copies the workspace's project files into the state directory and
@@ -145,6 +147,9 @@ func ruleKeys(b []byte) []string {
 		k := "deny " + policy.NormalizeHost(r.Host)
 		if *r.Allow {
 			k = "allow " + policy.NormalizeHost(r.Host)
+		}
+		if len(r.Ports) > 0 {
+			k += " ports " + policy.JoinPorts(r.Ports)
 		}
 		if r.AllowPrivate {
 			k += " (allow_private)"

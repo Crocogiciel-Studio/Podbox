@@ -27,7 +27,7 @@ func TestCheckGitAgainstRecord(t *testing.T) {
 	if err != nil || g.OK || len(g.Findings) != 1 {
 		t.Fatalf("commondir: want one finding, got %+v %v", g, err)
 	}
-	if w := GitWarning(m, *g); !strings.Contains(w, ".git/commondir") || !strings.Contains(w, "podbox git-check s --accept") {
+	if w := GitWarning(m.Workspace, *g, m.Name); !strings.Contains(w, ".git/commondir") || !strings.Contains(w, "podbox git-check s --accept") {
 		t.Fatalf("warning lacks path or fix: %s", w)
 	}
 	if err := st.RecordGit(m); err != nil {
@@ -57,7 +57,7 @@ func TestHookFilesInIntegrity(t *testing.T) {
 	if err != nil || g.OK || len(g.Findings) != 1 || g.Findings[0].Path != ".husky/pre-commit" {
 		t.Fatalf("want a finding on .husky/pre-commit, got %+v %v", g, err)
 	}
-	w := GitWarning(m, *g)
+	w := GitWarning(m.Workspace, *g, m.Name)
 	if !strings.Contains(w, "GIT HOOK FILES CHANGED") || strings.Contains(w, "TAMPERING") || !strings.Contains(w, "podbox git-check s --accept") {
 		t.Fatalf("warning: %s", w)
 	}

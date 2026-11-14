@@ -60,6 +60,9 @@ func (a *app) policyReloadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if c.MasksDropped, err = st.ReloadMasks(m); err != nil {
+				return err
+			}
 			e, err := st.RefreshPolicy(m)
 			if err != nil {
 				return err
@@ -80,13 +83,13 @@ func (a *app) policyReloadCmd() *cobra.Command {
 				for _, l := range []struct {
 					sign, what string
 					items      []string
-				}{{"+", "rule", c.RulesAdded}, {"-", "rule", c.RulesRemoved}, {"+", "ignore", c.IgnoreAdded}, {"-", "ignore", c.IgnoreRemoved}} {
+				}{{"+", "rule", c.RulesAdded}, {"-", "rule", c.RulesRemoved}, {"+", "ignore", c.IgnoreAdded}, {"-", "ignore", c.IgnoreRemoved}, {"-", "mask", c.MasksDropped}} {
 					for _, it := range l.items {
 						fmt.Fprintf(w, "%s %s %s\n", l.sign, l.what, it)
 					}
 				}
 				fmt.Fprintf(w, "%s: policy applied", m.Name)
-				if len(c.IgnoreAdded)+len(c.IgnoreRemoved) > 0 {
+				if len(c.IgnoreAdded)+len(c.IgnoreRemoved)+len(c.MasksDropped) > 0 {
 					fmt.Fprintf(w, "; masks apply at the next podbox stop + start")
 				}
 				fmt.Fprintln(w)
@@ -97,6 +100,7 @@ func (a *app) policyReloadCmd() *cobra.Command {
 
 func (a *app) policySetCmd(verb string, allow bool) *cobra.Command {
 	var scope string
+	var ports []int
 	c := &cobra.Command{
 		Use:   verb + " <sandbox> <host>",
 		Short: verb + " a host (exact or *.suffix); applies to the running sandbox within seconds",
@@ -121,7 +125,7 @@ func (a *app) policySetCmd(verb string, allow bool) *cobra.Command {
 				return output.Errorf(output.ExitUsage, "invalid --scope %q: want session or project", scope)
 			}
 			for _, p := range paths {
-				if err := policy.SetRule(p, args[1], allow); err != nil {
+				if err := policy.SetRule(p, args[1], allow, ports); err != nil {
 					return output.Wrap(output.ExitUsage, err, verb)
 				}
 			}
@@ -132,32 +136,38 @@ func (a *app) policySetCmd(verb string, allow bool) *cobra.Command {
 			for _, w := range e.Warnings {
 				a.out.Warn("%s", w)
 			}
-			d := e.Decide(args[1])
+			port := 443
+			if len(ports) > 0 {
+				port = ports[0]
+			}
+			d := e.Decide(args[1], port)
 			res := struct {
 				Sandbox string `json:"sandbox"`
 				Host    string `json:"host"`
+				Port    int    `json:"port"`
 				Scope   string `json:"scope"`
 				Allowed bool   `json:"allowed"`
 				Rule    string `json:"rule"`
 				Layer   string `json:"layer"`
-			}{m.Name, policy.NormalizeHost(args[1]), scope, d.Allow, "", ""}
+			}{m.Name, policy.NormalizeHost(args[1]), port, scope, d.Allow, "", ""}
 			res.Rule, res.Layer = d.Reason()
 			return a.out.Print(res, func(w io.Writer) {
 				state := "denied"
 				if d.Allow {
 					state = "allowed"
 				}
-				fmt.Fprintf(w, "%s: %s is now %s (decided by %s rule %s)\n", m.Name, res.Host, state, res.Layer, res.Rule)
+				fmt.Fprintf(w, "%s: %s port %d is now %s (decided by %s rule %s)\n", m.Name, res.Host, port, state, res.Layer, res.Rule)
 			})
 		},
 	}
 	c.Flags().StringVar(&scope, "scope", policy.LayerSession, "where to record the rule: session or project (.podbox/policy.yaml)")
+	c.Flags().IntSliceVar(&ports, "port", nil, "limit the rule to these ports (repeatable; default: 80 and 443 for allow, all ports for deny)")
 	return c
 }
 
 func printPolicy(w io.Writer, e policy.Effective) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "HOST\tDECISION\tLAYER\tPRIVATE")
+	fmt.Fprintln(tw, "HOST\tDECISION\tPORTS\tLAYER\tPRIVATE")
 	for _, r := range e.Rules {
 		d := "deny"
 		if r.Allow {
@@ -167,7 +177,7 @@ func printPolicy(w io.Writer, e policy.Effective) {
 		if r.AllowPrivate {
 			p = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Host, d, r.Layer, p)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.Host, d, r.PortList(), r.Layer, p)
 	}
 	tw.Flush()
 	fmt.Fprintln(w, "default: deny")

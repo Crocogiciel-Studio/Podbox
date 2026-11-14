@@ -68,8 +68,10 @@ func (s Store) CheckGit(m Meta) (*GitIntegrity, error) {
 	return &GitIntegrity{OK: len(f) == 0, Findings: f}, nil
 }
 
-// GitWarning is the advice printed when CheckGit has findings.
-func GitWarning(m Meta, g GitIntegrity) string {
+// GitWarning is the advice printed when CheckGit has findings, for one
+// sandbox or for several on the same workspace with the same findings.
+func GitWarning(ws string, g GitIntegrity, names ...string) string {
+	name := strings.Join(names, ", ")
 	var gitF, hookF []workspace.GitFinding
 	for _, f := range g.Findings {
 		if f.Hook {
@@ -85,17 +87,21 @@ func GitWarning(m Meta, g GitIntegrity) string {
 		}
 	}
 	if len(gitF) > 0 {
-		fmt.Fprintf(&sb, "%s: GIT DIRECTORY TAMPERING SUSPECTED in %s\n", m.Name, m.Workspace)
+		fmt.Fprintf(&sb, "%s: GIT DIRECTORY TAMPERING SUSPECTED in %s\n", name, ws)
 		list(gitF)
-		fmt.Fprintf(&sb, "Do NOT run git in %s until you have reviewed these paths: git on the host could run commands the agent chose.\n", m.Workspace)
-		fmt.Fprintf(&sb, "Remove what you did not create (e.g. rm %s/.git/commondir).\n", m.Workspace)
+		fmt.Fprintf(&sb, "Do NOT run git in %s until you have reviewed these paths: git on the host could run commands the agent chose.\n", ws)
+		fmt.Fprintf(&sb, "Remove or restore what you did not create (e.g. %s).\n", filepath.Join(ws, filepath.FromSlash(gitF[0].Path)))
 	}
 	if len(hookF) > 0 {
-		fmt.Fprintf(&sb, "%s: GIT HOOK FILES CHANGED in %s\n", m.Name, m.Workspace)
+		fmt.Fprintf(&sb, "%s: GIT HOOK FILES CHANGED in %s\n", name, ws)
 		list(hookF)
 		fmt.Fprintf(&sb, "Review the diff of these files (git diff, git status) before committing on the host: your next commit runs them.\n")
 	}
-	fmt.Fprintf(&sb, "Once reviewed, run: podbox git-check %s --accept", m.Name)
+	accept := make([]string, len(names))
+	for i, n := range names {
+		accept[i] = "podbox git-check " + n + " --accept"
+	}
+	fmt.Fprintf(&sb, "Once reviewed, run: %s", strings.Join(accept, " && "))
 	return sb.String()
 }
 

@@ -83,3 +83,14 @@ func TestPrintErrorSilentExitStatus(t *testing.T) {
 		t.Fatalf("code %d out %q err %q", code, out.String(), errw.String())
 	}
 }
+
+func TestWarnOnce(t *testing.T) {
+	var errOut bytes.Buffer
+	p := &Printer{Mode: Text, Out: io.Discard, Err: &errOut}
+	p.Warn("%s tampered", "x")
+	p.Warn("%s tampered", "x")
+	p.Warn("y tampered")
+	if errOut.String() != "warning: x tampered\nwarning: y tampered\n" {
+		t.Fatalf("%q", errOut.String())
+	}
+}

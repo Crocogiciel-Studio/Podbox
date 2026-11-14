@@ -192,9 +192,28 @@ func TestNotAllowed(t *testing.T) {
 	}
 }
 
+func TestPortsDefaultToWeb(t *testing.T) {
+	e := setup(t, nil)
+	resp, body := e.connect("allowed.test:22")
+	want := "Blocked by podbox network policy: host \"allowed.test\" is not allowed on port 22.\nAsk the user to run: podbox policy allow t allowed.test --port 22\n"
+	if resp.StatusCode != 403 || body != want {
+		t.Fatalf("%d %q", resp.StatusCode, body)
+	}
+	if !strings.Contains(e.logs.String(), `"host":"allowed.test","port":"22","decision":"deny","reason":"policy"`) {
+		t.Fatal(e.logs.String())
+	}
+	rs := rules("allowed.test")
+	rs[0].Ports = []int{22}
+	writePolicy(t, e.policy, rs)
+	eventually(t, func() bool { r, _ := e.connect("allowed.test:443"); return r.StatusCode == 403 })
+	if r, _ := e.connect("allowed.test:22"); r.StatusCode == 403 {
+		t.Fatal("ports: [22] not honoured")
+	}
+}
+
 func TestDestinationGuard(t *testing.T) {
 	e := setup(t, nil)
-	for _, target := range []string{"loop.test:443", "meta.test:80", "private.test:443", "localhost:22", "127.0.0.1:8080"} {
+	for _, target := range []string{"loop.test:443", "meta.test:80", "private.test:443", "localhost:443", "127.0.0.1:80"} {
 		resp, body := e.connect(target)
 		if resp.StatusCode != 403 || !strings.Contains(body, "blocked destination") {
 			t.Errorf("%s: %d %q", target, resp.StatusCode, body)
@@ -299,7 +318,7 @@ func TestUpstreamChaining(t *testing.T) {
 		t.Fatalf("upstream not used: %s", upLogs.String())
 	}
 	resp, body := e.connect("denied.test:443")
-	if resp.StatusCode != 403 || body != NotAllowedBody("t", "denied.test") {
+	if resp.StatusCode != 403 || body != NotAllowedBody("t", "denied.test", 443) {
 		t.Fatalf("refusal changed behind upstream: %d %q", resp.StatusCode, body)
 	}
 	if resp, _ := e.connect("loop.test:443"); resp.StatusCode != 403 {

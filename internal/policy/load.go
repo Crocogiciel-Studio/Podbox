@@ -25,6 +25,7 @@ type FileRule struct {
 	Host         string `yaml:"host"`
 	Allow        *bool  `yaml:"allow"`
 	AllowPrivate bool   `yaml:"allow_private,omitempty"`
+	Ports        []int  `yaml:"ports,omitempty"` // default: 80 and 443 for an allow, all for a deny
 }
 
 // Parse decodes and validates a layer. Warnings do not invalidate it.
@@ -53,6 +54,9 @@ func Parse(b []byte) (File, []string, error) {
 		if r.Allow == nil {
 			return File{}, nil, fmt.Errorf("rule %d (%s): allow must be true or false", i+1, r.Host)
 		}
+		if err := ValidatePorts(r.Ports); err != nil {
+			return File{}, nil, fmt.Errorf("rule %d (%s): %w", i+1, r.Host, err)
+		}
 	}
 	return f, warns, nil
 }
@@ -80,7 +84,7 @@ func LoadLayer(path, layer string) ([]Rule, []string) {
 func (f File) rules(layer string) []Rule {
 	rs := make([]Rule, 0, len(f.Rules))
 	for _, r := range f.Rules {
-		rs = append(rs, Rule{Host: NormalizeHost(r.Host), Allow: *r.Allow, AllowPrivate: r.AllowPrivate, Layer: layer})
+		rs = append(rs, Rule{Host: NormalizeHost(r.Host), Allow: *r.Allow, AllowPrivate: r.AllowPrivate, Ports: r.Ports, Layer: layer})
 	}
 	return rs
 }
@@ -163,10 +167,23 @@ func WriteAtomic(path string, b []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// SetRule rewrites the layer at path so host has exactly one rule. An
-// existing invalid file is never overwritten.
-func SetRule(path, host string, allow bool) error {
+// ValidatePorts rejects ports outside 1-65535.
+func ValidatePorts(ps []int) error {
+	for _, p := range ps {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("invalid port %d", p)
+		}
+	}
+	return nil
+}
+
+// SetRule rewrites the layer at path so host has exactly one rule, limited
+// to ports when given. An existing invalid file is never overwritten.
+func SetRule(path, host string, allow bool, ports []int) error {
 	if err := ValidatePattern(host); err != nil {
+		return err
+	}
+	if err := ValidatePorts(ports); err != nil {
 		return err
 	}
 	var f File
@@ -190,7 +207,7 @@ func SetRule(path, host string, allow bool) error {
 		}
 		kept = append(kept, r)
 	}
-	f.Rules = append(kept, FileRule{Host: h, Allow: &allow, AllowPrivate: allow && private})
+	f.Rules = append(kept, FileRule{Host: h, Allow: &allow, AllowPrivate: allow && private, Ports: ports})
 	out, err := yaml.Marshal(f)
 	if err != nil {
 		return err

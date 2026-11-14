@@ -150,3 +150,78 @@ func TestGitDirectoryKind(t *testing.T) {
 		t.Fatalf("changed .git pointer not found: %+v", f)
 	}
 }
+
+// TestLinkedWorktreeTampering: git on the host, in a linked worktree, reads
+// .git/worktrees/<name>/commondir and config.worktree.
+func TestLinkedWorktreeTampering(t *testing.T) {
+	for _, tc := range []struct {
+		name, path string
+		do         func(t *testing.T, wt string)
+		want       string
+	}{
+		{"commondir", ".git/worktrees/wt/commondir", func(t *testing.T, wt string) { writeFile(t, filepath.Join(wt, "commondir"), "../../../evil\n") }, "linked worktree at a git directory"},
+		{"gitdir", ".git/worktrees/wt/gitdir", func(t *testing.T, wt string) { writeFile(t, filepath.Join(wt, "gitdir"), "/tmp/x/.git\n") }, "back-pointer"},
+		{"config.worktree", ".git/worktrees/wt/config.worktree", func(t *testing.T, wt string) {
+			writeFile(t, filepath.Join(wt, "config.worktree"), "[core]\nfsmonitor = /tmp/x\n")
+		}, "per-worktree configuration"},
+		{"unknown entry", ".git/worktrees/wt/config", func(t *testing.T, wt string) { writeFile(t, filepath.Join(wt, "config"), "[core]\n") }, "unexpected entry"},
+		{"symlink", ".git/worktrees/wt/HEAD", func(t *testing.T, wt string) {
+			if err := os.Remove(filepath.Join(wt, "HEAD")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("/tmp/evil/HEAD", filepath.Join(wt, "HEAD")); err != nil {
+				t.Fatal(err)
+			}
+		}, "outside .git"},
+		{"rebase exec", ".git/worktrees/wt/rebase-merge/git-rebase-todo", func(t *testing.T, wt string) {
+			writeFile(t, filepath.Join(wt, "rebase-merge/git-rebase-todo"), "exec touch /tmp/pwned\n")
+		}, "exec lines"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := repo(t)
+			git(t, ws, "worktree", "add", "-q", filepath.Join(t.TempDir(), "wt"))
+			before := printOf(t, ws)
+			tc.do(t, filepath.Join(ws, ".git", "worktrees", "wt"))
+			f := DiffGit(before, printOf(t, ws))
+			if len(f) != 1 || f[0].Path != tc.path || !strings.Contains(f[0].Reason, tc.want) {
+				t.Fatalf("want one finding on %s containing %q, got %+v", tc.path, tc.want, f)
+			}
+		})
+	}
+}
+
+func TestLinkedWorktreeChurnAndCreation(t *testing.T) {
+	ws := repo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, ws, "worktree", "add", "-q", wt)
+	before := printOf(t, ws)
+	writeFile(t, filepath.Join(wt, "c.txt"), "c\n")
+	git(t, wt, "add", "c.txt")
+	git(t, wt, "commit", "-qm", "c")
+	git(t, wt, "checkout", "-qb", "other")
+	git(t, wt, "reset", "-q", "--hard", "HEAD~1")
+	git(t, ws, "worktree", "lock", wt)
+	git(t, ws, "worktree", "add", "-q", filepath.Join(ws, "inner")) // a new worktree as git writes it
+	if f := DiffGit(before, printOf(t, ws)); len(f) != 0 {
+		t.Fatalf("worktree churn produced findings: %+v", f)
+	}
+	// A worktree directory planted with a foreign commondir is reported.
+	writeFile(t, filepath.Join(ws, ".git/worktrees/planted/HEAD"), "ref: refs/heads/main\n")
+	writeFile(t, filepath.Join(ws, ".git/worktrees/planted/commondir"), "/tmp/evil\n")
+	if f := DiffGit(before, printOf(t, ws)); len(f) != 1 || f[0].Path != ".git/worktrees/planted/commondir" {
+		t.Fatalf("planted worktree not found: %+v", f)
+	}
+}
+
+func TestSubmoduleWorktreeTampering(t *testing.T) {
+	ws := repo(t)
+	before := printOf(t, ws)
+	g := filepath.Join(ws, ".git", "modules", "sub")
+	writeFile(t, filepath.Join(g, "HEAD"), "ref: refs/heads/main\n")
+	after := printOf(t, ws)
+	writeFile(t, filepath.Join(g, "worktrees/w/HEAD"), "x\n")
+	writeFile(t, filepath.Join(g, "worktrees/w/commondir"), "../../../../evil\n")
+	if f := DiffGit(after, printOf(t, ws)); len(f) != 1 || f[0].Path != ".git/modules/sub/worktrees/w/commondir" {
+		t.Fatalf("submodule worktree commondir not found: %+v (before %d entries)", f, len(before.Entries))
+	}
+}

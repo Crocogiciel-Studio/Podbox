@@ -55,40 +55,47 @@ type Status struct {
 	GitIntegrity *GitIntegrity `json:"git_integrity,omitempty"`
 }
 
+// Imported is what Create read from the project files, as policy reload
+// renders it (allow example.com, notes.txt).
+type Imported struct {
+	Rules  []string `json:"rules"`
+	Ignore []string `json:"ignore"`
+}
+
 // Create builds images if needed and creates the sandbox's objects.
-func (m *Manager) Create(ctx context.Context, name, agentName, ws string) (meta Meta, err error) {
+func (m *Manager) Create(ctx context.Context, name, agentName, ws string) (meta Meta, imp Imported, err error) {
 	if err := ValidateName(name); err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	ag, err := agents.Get(agentName)
 	if err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	if ws, err = filepath.Abs(ws); err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	if fi, err := os.Stat(ws); err != nil || !fi.IsDir() {
-		return meta, fmt.Errorf("workspace %s is not a directory", ws)
+		return meta, imp, fmt.Errorf("workspace %s is not a directory", ws)
 	}
 	if err := workspace.CheckRoot(ws, m.Home, m.Owned); err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	if _, err := m.Store.Load(name); err == nil {
-		return meta, fmt.Errorf("%w: %s", ErrExists, name)
+		return meta, imp, fmt.Errorf("%w: %s", ErrExists, name)
 	}
 	if cs, err := m.RT.ContainerList(ctx, LabelSandbox+"="+name); err != nil {
-		return meta, err
+		return meta, imp, err
 	} else if len(cs) > 0 {
-		return meta, fmt.Errorf("%w: %s (podman objects left over; run podbox rm %s)", ErrExists, name, name)
+		return meta, imp, fmt.Errorf("%w: %s (podman objects left over; run podbox rm %s)", ErrExists, name, name)
 	}
 	if ag.Experimental {
 		m.Warn("agent %s is experimental: its image and flags are unverified", ag.Name)
 	}
 	if _, err := m.Images.Ensure(ctx, images.Proxy, false); err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	if _, err := m.Images.Ensure(ctx, ag.Image, false); err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 
 	meta = Meta{Name: name, Agent: ag.Name, Workspace: ws, Created: time.Now().UTC()}
@@ -98,41 +105,42 @@ func (m *Manager) Create(ctx context.Context, name, agentName, ws string) (meta 
 		}
 	}()
 	if err = m.Store.Save(meta); err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	c, err := m.Store.Snapshot(meta)
 	if err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	for _, w := range c.Warnings {
 		m.Warn("%s", w)
 	}
+	imp = Imported{Rules: c.RulesAdded, Ignore: c.IgnoreAdded}
 	if err = m.Store.RecordGit(meta); err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	if err = m.refreshPolicy(meta); err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	if _, err = ensureNetwork(ctx, m.RT, runtime.NetworkSpec{Name: EgressNetwork, Labels: map[string]string{LabelShared: "egress"}}); err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	if _, err = ensureNetwork(ctx, m.RT, runtime.NetworkSpec{
 		Name: internalNetwork(name), Internal: true, DisableDNS: true, Labels: labels(meta, "network"),
 	}); err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	if ok, verr := m.RT.VolumeExists(ctx, HomeVolume(ag.Name)); verr != nil {
-		return meta, verr
+		return meta, imp, verr
 	} else if !ok {
 		if err = m.RT.VolumeCreate(ctx, HomeVolume(ag.Name), map[string]string{LabelHome: ag.Name}); err != nil {
-			return meta, err
+			return meta, imp, err
 		}
 	}
 	if err = m.createProxy(ctx, meta); err != nil {
-		return meta, err
+		return meta, imp, err
 	}
 	err = m.createAgent(ctx, meta)
-	return meta, err
+	return meta, imp, err
 }
 
 func (m *Manager) refreshPolicy(meta Meta) error {
@@ -164,7 +172,7 @@ func (m *Manager) createProxy(ctx context.Context, meta Meta) error {
 }
 
 // createAgent resolves masks now, so files added since the last start are
-// covered, using the .sandboxignore snapshot.
+// covered, using the .sandboxignore snapshot and the mask record.
 func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 	ag, err := agents.Get(meta.Agent)
 	if err != nil {
@@ -178,13 +186,12 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 	if err != nil {
 		return err
 	}
-	ignore, _, err := readSnap(m.Store.ProjectIgnorePath(meta.Name))
+	res, err := m.Store.ResolveMasks(meta)
 	if err != nil {
 		return err
 	}
-	res, err := workspace.Resolve(meta.Workspace, ignore)
-	if err != nil {
-		return err
+	if w := MaskWarning(meta, res); w != "" {
+		m.Warn("%s", w)
 	}
 	for _, w := range res.Warnings {
 		m.Warn("%s", w)

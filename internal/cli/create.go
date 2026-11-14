@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -10,6 +12,7 @@ import (
 	"github.com/Crocogiciel-Studio/podbox/internal/agents"
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
+	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
 type createFlags struct{ name string }
@@ -55,10 +58,13 @@ func (a *app) createCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := m.Create(cmd.Context(), name, agent, ws); err != nil {
+			_, imp, err := m.Create(cmd.Context(), name, agent, ws)
+			if err != nil {
 				return classify(err)
 			}
-			return a.done(name, "created", nil, a.hookNotice(m, name))
+			a.printImported(name, imp)
+			return a.out.Print(actionResult{Name: name, Action: "created", Info: a.hookNotice(m, name), Imported: &imp},
+				func(w io.Writer) { fmt.Fprintf(w, "%s created\n", name) })
 		},
 	}
 	f.bind(c)
@@ -80,7 +86,7 @@ func (a *app) runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSandbox(cmd.Context(), m, name, agent, ws); err != nil {
+			if err := a.ensureSandbox(cmd.Context(), m, name, agent, ws); err != nil {
 				return classify(err)
 			}
 			if err := m.Start(cmd.Context(), name); err != nil {
@@ -96,11 +102,25 @@ func (a *app) runCmd() *cobra.Command {
 	return c
 }
 
-func ensureSandbox(ctx context.Context, m *sandbox.Manager, name, agent, ws string) error {
+// printImported shows, one line per rule, what create took from the project
+// files: the agent may have written them in an earlier sandbox.
+func (a *app) printImported(name string, imp sandbox.Imported) {
+	for _, r := range imp.Rules {
+		a.out.Info("%s: imported rule from %s: %s", name, sandbox.ProjectPolicyRel, r)
+	}
+	for _, p := range imp.Ignore {
+		a.out.Info("%s: imported %s pattern: %s", name, workspace.IgnoreFile, p)
+	}
+}
+
+func (a *app) ensureSandbox(ctx context.Context, m *sandbox.Manager, name, agent, ws string) error {
 	meta, err := m.Store.Load(name)
 	switch {
 	case errors.Is(err, sandbox.ErrNotFound):
-		_, err = m.Create(ctx, name, agent, ws)
+		var imp sandbox.Imported
+		if _, imp, err = m.Create(ctx, name, agent, ws); err == nil {
+			a.printImported(name, imp)
+		}
 		return err
 	case err != nil:
 		return err

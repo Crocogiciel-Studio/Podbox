@@ -19,8 +19,11 @@ Precedence: a deny in any layer wins; otherwise an allow in any layer; otherwise
 mode: strict          # only strict is honoured in v0.1; ask/learn warn and act as strict
 default: deny         # the only accepted value
 rules:
-  - host: "*.pythonhosted.org"   # exact host or *.suffix (subdomains only), case-insensitive, any port
+  - host: "*.pythonhosted.org"   # exact host or *.suffix (subdomains only), case-insensitive
     allow: true                  # required: true or false
+  - host: git.corp.example
+    allow: true
+    ports: [22, 443]             # optional; default 80 and 443 for an allow, every port for a deny
   - host: gitlab.corp.internal
     allow: true
     allow_private: true          # permit private addresses (RFC 1918, ULA, CGNAT) for this rule
@@ -28,14 +31,16 @@ rules:
     allow: false
 ```
 
-Fail closed: a file that does not parse, has an unknown key, a bad pattern, a rule without `allow`, or `default` other than `deny` is ignored entirely with a warning; a missing file is an empty layer.
+Ports: an allow rule opens ports 80 and 443 only, so an allowlisted host is not reachable on 22 or any other port unless a rule lists it in `ports`. A deny rule without `ports` covers every port; with `ports`, only those. The proxy logs a refused port as `"decision":"deny","reason":"policy"` with the `port`, and tells the agent the `--port` fix.
+
+Fail closed: a file that does not parse, has an unknown key, a bad pattern or port (outside 1-65535), a rule without `allow`, or `default` other than `deny` is ignored entirely with a warning; a missing file is an empty layer.
 
 ## Commands
 
 ```sh
 podbox policy show <sandbox>                       # rules with their layer, warnings
-podbox policy allow <sandbox> <host> [--scope session|project]
-podbox policy deny <sandbox> <host> [--scope session|project]
+podbox policy allow <sandbox> <host> [--port N]... [--scope session|project]
+podbox policy deny <sandbox> <host> [--port N]... [--scope session|project]
 podbox policy reload <sandbox>                     # re-read project files, print and apply the changes
 ```
 
@@ -45,8 +50,9 @@ Changes rewrite the effective file atomically; the running proxy applies them wi
 
 The agent can write the project, so podbox never trusts the live `.podbox/policy.yaml` or `.sandboxignore`. `create` copies both into the sandbox state directory; every later compilation (`policy allow|deny`, `start`) and mask computation uses that copy only. In the agent container both paths, when they exist, are mounted read-only.
 
+- `create` prints each rule and pattern it imports (`<name>: imported rule from .podbox/policy.yaml: allow example.com`, `<name>: imported .sandboxignore pattern: secrets/`) on stderr and lists them in `imported` (`rules`, `ignore`) in its JSON output: the agent of an earlier sandbox may have written these files.
 - `--scope project` writes the rule to the project file and to the snapshot, so the commit and the sandbox agree.
-- After editing a project file by hand (or noticing the agent did), review it and run `podbox policy reload <sandbox>`. It prints added and removed rules (`+ rule allow example.com`) and ignore patterns (`- ignore secrets/`), then applies the policy at once; mask changes take effect at the next `stop` + `start`. `--output json` returns `rules_added`, `rules_removed`, `ignore_added`, `ignore_removed`.
+- After editing a project file by hand (or noticing the agent did), review it and run `podbox policy reload <sandbox>`. It prints added and removed rules (`+ rule allow example.com`) and ignore patterns (`- ignore secrets/`), then applies the policy at once; mask changes take effect at the next `stop` + `start`. It also forgets the recorded masks (see [masks follow their files](security-model.md#workspace-masking)) that no pattern matches any more, and the missing ones, printing each (`- mask config/prod.yaml (now config2/prod.yaml)`). `--output json` returns `rules_added`, `rules_removed`, `ignore_added`, `ignore_removed`, `masks_dropped`.
 - `podbox ls` and `policy show` warn when a project file differs from the snapshot; `ls -o json` lists them in `project_changed`.
 - A project file reached through a symbolic link is ignored with a warning.
 

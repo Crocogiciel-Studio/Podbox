@@ -24,13 +24,30 @@ func (a *app) lsCmd() *cobra.Command {
 			if err != nil {
 				return classify(err)
 			}
+			// Sandboxes sharing a workspace and its findings get one warning.
+			type group struct {
+				ws    string
+				g     sandbox.GitIntegrity
+				names []string
+			}
+			var groups []*group
+			byKey := map[string]*group{}
 			for _, s := range list {
 				if len(s.ProjectChanged) > 0 {
 					a.out.Warn("%s", sandbox.DriftWarning(s.Name, s.ProjectChanged))
 				}
-				if s.GitIntegrity != nil && !s.GitIntegrity.OK {
-					a.out.Warn("%s", sandbox.GitWarning(sandbox.Meta{Name: s.Name, Workspace: s.Workspace}, *s.GitIntegrity))
+				if s.GitIntegrity == nil || s.GitIntegrity.OK {
+					continue
 				}
+				key := fmt.Sprintf("%s\x00%v", s.Workspace, s.GitIntegrity.Findings)
+				if byKey[key] == nil {
+					byKey[key] = &group{ws: s.Workspace, g: *s.GitIntegrity}
+					groups = append(groups, byKey[key])
+				}
+				byKey[key].names = append(byKey[key].names, s.Name)
+			}
+			for _, g := range groups {
+				a.out.Warn("%s", sandbox.GitWarning(g.ws, g.g, g.names...))
 			}
 			return a.out.Print(list, func(w io.Writer) {
 				tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)

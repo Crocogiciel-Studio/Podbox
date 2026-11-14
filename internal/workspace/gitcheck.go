@@ -10,6 +10,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -23,13 +25,15 @@ import (
 
 // GitPrint is a fingerprint of a workspace's .git.
 type GitPrint struct {
-	Kind    string            `json:"kind"`              // dir, file, symlink, none or other
-	Pointer string            `json:"pointer,omitempty"` // sha256 of a .git file
-	Entries []string          `json:"entries,omitempty"` // top-level names
-	Files   map[string]string `json:"files,omitempty"`   // watched path -> sha256
-	Links   map[string]string `json:"links,omitempty"`   // symlink path -> target
-	// PendingExec reports a rebase todo with exec lines.
-	PendingExec bool `json:"pending_exec,omitempty"`
+	Kind    string `json:"kind"`              // dir, file, symlink, none or other
+	Pointer string `json:"pointer,omitempty"` // sha256 of a .git file
+	// Entries are the top-level names, and the entries of each linked
+	// worktree directory as paths (worktrees/<name>/<entry>).
+	Entries []string          `json:"entries,omitempty"`
+	Files   map[string]string `json:"files,omitempty"` // watched path -> sha256
+	Links   map[string]string `json:"links,omitempty"` // symlink path -> target
+	// PendingExec lists rebase todos with exec lines.
+	PendingExec []string `json:"pending_exec_todos,omitempty"`
 	// Hooks maps worktree hook files to their sha256.
 	Hooks map[string]string `json:"hooks,omitempty"`
 }
@@ -58,8 +62,75 @@ func isChurn(name string) bool {
 		strings.HasPrefix(name, "fsmonitor--daemon")
 }
 
+// worktreeChurn adds to churn the entries of a linked worktree's git
+// directory (.git/worktrees/<name>) that git manages; commondir, gitdir and
+// config.worktree are watched files, reported by content. A config there is
+// not churn.
+var worktreeChurn = map[string]bool{"locked": true, "commondir": true, "gitdir": true, "config.worktree": true}
+
+// worktreeFile matches the watched files of a linked worktree's git
+// directory, in .git or in a submodule git directory under .git/modules.
+var worktreeFile = regexp.MustCompile(`(^|/)worktrees/[^/]+/(commondir|gitdir|config\.worktree)$`)
+
+// worktreeDir reports a linked worktree's git directory: <gitdir>/worktrees/<name>.
+func worktreeDir(root, fp string) bool {
+	parent := filepath.Dir(fp)
+	if filepath.Base(parent) != "worktrees" {
+		return false
+	}
+	gd := filepath.Dir(parent)
+	if gd == root {
+		return true
+	}
+	fi, err := os.Lstat(filepath.Join(gd, "HEAD"))
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// isChurnEntry reports an entry git creates and removes itself: a
+// top-level name, or a worktree entry path (see GitPrint.Entries).
+func isChurnEntry(e string) bool {
+	if i := strings.LastIndexByte(e, '/'); i >= 0 {
+		n := e[i+1:]
+		return worktreeChurn[n] || n != "config" && isChurn(n)
+	}
+	return isChurn(e)
+}
+
+// stdCommondir is the sha256 of the commondir git writes in a new linked
+// worktree ("../..").
+var stdCommondir = func() string { s := sha256.Sum256([]byte("../..\n")); return hex.EncodeToString(s[:]) }()
+
+// newWorktreeFile reports a watched file of a worktree git directory that
+// did not exist in old, holding what git itself writes there: the agent (or
+// the user) ran git worktree add. Its gitdir is a back-pointer git only uses
+// to list and prune worktrees.
+func newWorktreeFile(old GitPrint, rel, sum string) bool {
+	dir := path.Dir(rel)
+	for _, e := range old.Entries {
+		if strings.HasPrefix(e, dir+"/") {
+			return false // the worktree existed: any change is reported
+		}
+	}
+	switch path.Base(rel) {
+	case "gitdir":
+		return true
+	case "commondir":
+		return sum == stdCommondir
+	}
+	return false
+}
+
 // why explains a watched path; "" means the path is not watched.
 func why(rel string) string {
+	if m := worktreeFile.FindStringSubmatch(rel); m != nil {
+		switch m[2] {
+		case "commondir":
+			return "points this linked worktree at a git directory, whose config and hooks git on the host uses in that worktree"
+		case "gitdir":
+			return "linked worktree back-pointer, changed in the sandbox"
+		}
+		return "per-worktree configuration read by git on the host in that linked worktree (core.fsmonitor, core.hooksPath, ...)"
+	}
 	switch rel {
 	case "config":
 		return "git configuration, which can set core.fsmonitor, core.hooksPath or filters run by git on the host"
@@ -125,7 +196,18 @@ func fingerprintGitDir(ws string) (GitPrint, error) {
 			return nil // unreadable entries are unreadable to host git too
 		}
 		rel := filepath.ToSlash(mustRel(root, fp))
+		if d.IsDir() && worktreeDir(root, fp) {
+			if es, err := os.ReadDir(fp); err == nil {
+				for _, e := range es {
+					p.Entries = append(p.Entries, rel+"/"+e.Name())
+				}
+			}
+		}
 		switch {
+		case d.Name() == "git-rebase-todo" && path.Base(path.Dir(rel)) == "rebase-merge":
+			if pendingExec(fp) {
+				p.PendingExec = append(p.PendingExec, rel)
+			}
 		case d.Type()&fs.ModeSymlink != 0:
 			if t, err := os.Readlink(fp); err == nil {
 				p.Links[rel] = t
@@ -137,7 +219,6 @@ func fingerprintGitDir(ws string) (GitPrint, error) {
 		}
 		return nil
 	})
-	p.PendingExec = pendingExec(filepath.Join(root, "rebase-merge", "git-rebase-todo"))
 	return p, err
 }
 
@@ -199,7 +280,7 @@ func diffGitDir(old, cur GitPrint) []GitFinding {
 	}
 	seen := map[string]bool{}
 	for rel, sum := range cur.Files {
-		if prev, ok := old.Files[rel]; !ok || prev != sum {
+		if prev, ok := old.Files[rel]; !ok && !newWorktreeFile(old, rel, sum) || ok && prev != sum {
 			add(rel, changeVerb(ok)+": "+why(rel))
 			seen[rel] = true
 		}
@@ -224,13 +305,15 @@ func diffGitDir(old, cur GitPrint) []GitFinding {
 		known[e] = true
 	}
 	for _, e := range cur.Entries {
-		if !known[e] && !isChurn(e) && !seen[e] {
+		if !known[e] && !isChurnEntry(e) && !seen[e] {
 			add(e, "appeared: unexpected entry in .git")
 			seen[e] = true
 		}
 	}
-	if cur.PendingExec && !old.PendingExec {
-		add("rebase-merge/git-rebase-todo", "pending rebase has exec lines that git rebase --continue would run")
+	for _, todo := range cur.PendingExec {
+		if !slices.Contains(old.PendingExec, todo) {
+			add(todo, "pending rebase has exec lines that git rebase --continue would run")
+		}
 	}
 	return out
 }
