@@ -9,6 +9,7 @@ import (
 
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
+	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
 func write(t *testing.T, path, body string) {
@@ -147,5 +148,36 @@ func TestGitConfigReadOnly(t *testing.T) {
 	}
 	if ro := readOnlyProject(linked); len(ro) != 0 || gitDir(linked) {
 		t.Fatalf("symlinked .git mounted: %v", ro)
+	}
+}
+
+func TestGitHooksReadOnly(t *testing.T) {
+	repo := t.TempDir()
+	write(t, filepath.Join(repo, ".git", "config"), "[core]\n")
+	if ro := readOnlyProject(repo); !reflect.DeepEqual(ro, []string{".git/config"}) {
+		t.Fatalf("absent hooks mounted: %v", ro)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git", "hooks")); err == nil {
+		t.Fatal(".git/hooks created on the host")
+	}
+	for _, f := range []string{"hooks/pre-commit", "modules/sub/HEAD", "modules/sub/hooks/post-checkout", "modules/sub/objects/hooks/x",
+		"modules/lib/foo/HEAD", "modules/lib/foo/hooks/x", "modules/sub/modules/inner/HEAD", "modules/sub/modules/inner/hooks/x"} {
+		write(t, filepath.Join(repo, ".git", f), "x\n")
+	}
+	want := []string{".git/config", ".git/hooks", ".git/modules/lib/foo/hooks", ".git/modules/sub/hooks", ".git/modules/sub/modules/inner/hooks"}
+	if ro := readOnlyProject(repo); !reflect.DeepEqual(ro, want) {
+		t.Fatalf("read-only %v, want %v", ro, want)
+	}
+	res, err := workspace.Resolve(repo, nil)
+	if err != nil || len(res.Masks) != 0 {
+		t.Fatalf("hooks masked: %+v %v", res.Masks, err)
+	}
+	s := agentSpec(agentInput{Meta: Meta{Name: "t", Agent: "shell", Workspace: "/p"}, GOOS: "linux", ReadOnly: []string{".git/config", ".git/hooks"}, GitDir: true, EmptyDir: "/empty"})
+	argv := strings.Join(runtime.CreateArgs(s), " ")
+	if !strings.Contains(argv, "--volume /p/.git/hooks:/p/.git/hooks:ro") || strings.Contains(argv, "/empty") {
+		t.Fatalf("want .git/hooks bound read-only on itself: %s", argv)
+	}
+	if i, j := strings.Index(argv, "--volume /p/.git:/p/.git "), strings.Index(argv, "/p/.git/hooks:ro"); i < 0 || j < i {
+		t.Fatalf(".git/hooks must be mounted after .git: %s", argv)
 	}
 }

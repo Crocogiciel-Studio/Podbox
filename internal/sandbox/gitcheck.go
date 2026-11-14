@@ -70,12 +70,42 @@ func (s Store) CheckGit(m Meta) (*GitIntegrity, error) {
 
 // GitWarning is the advice printed when CheckGit has findings.
 func GitWarning(m Meta, g GitIntegrity) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s: GIT DIRECTORY TAMPERING SUSPECTED in %s\n", m.Name, m.Workspace)
+	var gitF, hookF []workspace.GitFinding
 	for _, f := range g.Findings {
-		fmt.Fprintf(&sb, "  %s: %s\n", f.Path, f.Reason)
+		if f.Hook {
+			hookF = append(hookF, f)
+		} else {
+			gitF = append(gitF, f)
+		}
 	}
-	fmt.Fprintf(&sb, "Do NOT run git in %s until you have reviewed these paths: git on the host could run commands the agent chose.\n", m.Workspace)
-	fmt.Fprintf(&sb, "Remove what you did not create (e.g. rm %s/.git/commondir), then run: podbox git-check %s --accept", m.Workspace, m.Name)
+	var sb strings.Builder
+	list := func(fs []workspace.GitFinding) {
+		for _, f := range fs {
+			fmt.Fprintf(&sb, "  %s: %s\n", f.Path, f.Reason)
+		}
+	}
+	if len(gitF) > 0 {
+		fmt.Fprintf(&sb, "%s: GIT DIRECTORY TAMPERING SUSPECTED in %s\n", m.Name, m.Workspace)
+		list(gitF)
+		fmt.Fprintf(&sb, "Do NOT run git in %s until you have reviewed these paths: git on the host could run commands the agent chose.\n", m.Workspace)
+		fmt.Fprintf(&sb, "Remove what you did not create (e.g. rm %s/.git/commondir).\n", m.Workspace)
+	}
+	if len(hookF) > 0 {
+		fmt.Fprintf(&sb, "%s: GIT HOOK FILES CHANGED in %s\n", m.Name, m.Workspace)
+		list(hookF)
+		fmt.Fprintf(&sb, "Review the diff of these files (git diff, git status) before committing on the host: your next commit runs them.\n")
+	}
+	fmt.Fprintf(&sb, "Once reviewed, run: podbox git-check %s --accept", m.Name)
 	return sb.String()
+}
+
+// HookNotice tells, at launch, which worktree files define git hooks; ""
+// when there are none.
+func HookNotice(m Meta) string {
+	src := workspace.HookSources(m.Workspace)
+	if len(src) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s: this project runs code from %s on your commits; the agent can modify it: review the diff before committing on the host; for untrusted code use --clone (coming soon)",
+		m.Name, strings.Join(src, ", "))
 }

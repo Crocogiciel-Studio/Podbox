@@ -18,7 +18,8 @@ import (
 // host trusts what it finds there. A GitPrint records the parts of .git that
 // can make host git run commands or read another repository; normal churn
 // (objects, refs, logs, index, HEAD, ...) is left out so commits, branches,
-// rebases, stashes and gc do not change it.
+// rebases, stashes and gc do not change it. It also records the worktree
+// files that define hooks (see FingerprintHooks).
 
 // GitPrint is a fingerprint of a workspace's .git.
 type GitPrint struct {
@@ -29,6 +30,8 @@ type GitPrint struct {
 	Links   map[string]string `json:"links,omitempty"`   // symlink path -> target
 	// PendingExec reports a rebase todo with exec lines.
 	PendingExec bool `json:"pending_exec,omitempty"`
+	// Hooks maps worktree hook files to their sha256.
+	Hooks map[string]string `json:"hooks,omitempty"`
 }
 
 // GitFinding is one suspicious difference, with a path relative to the
@@ -36,6 +39,7 @@ type GitPrint struct {
 type GitFinding struct {
 	Path   string `json:"path"`
 	Reason string `json:"reason"`
+	Hook   bool   `json:"hook,omitempty"` // a worktree hook file, outside .git
 }
 
 // churn lists top-level .git entries that git creates and removes itself.
@@ -71,6 +75,9 @@ func why(rel string) string {
 	if strings.HasPrefix(rel, "info/") && rel != "info/refs" { // info/refs: written by repack
 		return "changes what git reads (excludes, attributes, sparse checkout, grafts)"
 	}
+	if strings.HasPrefix(rel, "hooks/") && !strings.HasSuffix(rel, ".sample") {
+		return "git hook run by git on the host (hooks are read-only in the sandbox only when .git/hooks existed at start)"
+	}
 	if strings.HasPrefix(rel, "modules/") {
 		base := path.Base(rel)
 		if base == "config" || base == "commondir" || base == "config.worktree" ||
@@ -82,8 +89,14 @@ func why(rel string) string {
 	return ""
 }
 
-// FingerprintGit records the .git of workspace ws.
+// FingerprintGit records the .git of workspace ws and its hook files.
 func FingerprintGit(ws string) (GitPrint, error) {
+	p, err := fingerprintGitDir(ws)
+	p.Hooks = FingerprintHooks(ws)
+	return p, err
+}
+
+func fingerprintGitDir(ws string) (GitPrint, error) {
 	root := filepath.Join(ws, ".git")
 	fi, err := os.Lstat(root)
 	switch {
@@ -156,6 +169,12 @@ func pendingExec(todo string) bool {
 // DiffGit lists what changed from old to cur that git on the host could
 // act on, sorted by path.
 func DiffGit(old, cur GitPrint) []GitFinding {
+	out := append(diffGitDir(old, cur), diffHooks(old.Hooks, cur.Hooks)...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+func diffGitDir(old, cur GitPrint) []GitFinding {
 	out := []GitFinding{}
 	add := func(rel, reason string) {
 		p := ".git"
@@ -213,7 +232,6 @@ func DiffGit(old, cur GitPrint) []GitFinding {
 	if cur.PendingExec && !old.PendingExec {
 		add("rebase-merge/git-rebase-todo", "pending rebase has exec lines that git rebase --continue would run")
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
 }
 

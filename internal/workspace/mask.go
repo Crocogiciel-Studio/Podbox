@@ -4,7 +4,6 @@ package workspace
 import (
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,7 +16,7 @@ var Forced = []string{
 	".env*", "*.pem", "*.key", "id_*",
 	".ssh/", ".aws/", ".kube/", ".gnupg/",
 	".npmrc", ".pypirc", ".netrc", ".git-credentials",
-	".docker/config.json", ".git/hooks/",
+	".docker/config.json",
 }
 
 // IgnoreFile adds masks in gitignore syntax.
@@ -63,10 +62,7 @@ func Resolve(root string, ignore []byte) (Result, error) {
 		}
 		if d.IsDir() {
 			if d.Name() == ".git" {
-				if fi, err := os.Lstat(filepath.Join(p, "hooks")); err == nil && fi.IsDir() {
-					res.Masks = append(res.Masks, Mask{Rel: rel + "/hooks", Dir: true})
-				}
-				return fs.SkipDir
+				return fs.SkipDir // protected by read-only binds and the integrity check
 			}
 			if masked(rel + "/") {
 				res.Masks = append(res.Masks, Mask{Rel: rel, Dir: true})

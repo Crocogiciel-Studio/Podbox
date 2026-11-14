@@ -58,7 +58,7 @@ func (a *app) createCmd() *cobra.Command {
 			if _, err := m.Create(cmd.Context(), name, agent, ws); err != nil {
 				return classify(err)
 			}
-			return a.done(name, "created", nil)
+			return a.done(name, "created", nil, a.hookNotice(m, name))
 		},
 	}
 	f.bind(c)
@@ -86,6 +86,7 @@ func (a *app) runCmd() *cobra.Command {
 			if err := m.Start(cmd.Context(), name); err != nil {
 				return classify(err)
 			}
+			a.hookNotice(m, name)
 			code, err := m.Attach(cmd.Context(), name, terminal())
 			a.gitCheck(m, name)
 			return exitWith(code, err)

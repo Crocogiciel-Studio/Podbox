@@ -56,7 +56,7 @@ func TestResolve(t *testing.T) {
 		}
 		got = append(got, s)
 	}
-	want := ".docker/config.json .env .env.local .git/hooks/ .ssh/ secrets/ src/server.pem"
+	want := ".docker/config.json .env .env.local .ssh/ secrets/ src/server.pem" // .git: read-only binds, not masks
 	if strings.Join(got, " ") != want {
 		t.Fatalf("masks\n got %s\nwant %s", strings.Join(got, " "), want)
 	}

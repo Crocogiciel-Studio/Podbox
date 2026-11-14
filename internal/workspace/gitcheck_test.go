@@ -105,6 +105,10 @@ func TestGitTamperingFound(t *testing.T) {
 		{"submodule hook", ".git/modules/sub/hooks/post-checkout", func(t *testing.T, g string) {
 			writeFile(t, filepath.Join(g, "modules/sub/hooks/post-checkout"), "#!/bin/sh\n")
 		}, "submodule"},
+		{"hook created", ".git/hooks/pre-commit", func(t *testing.T, g string) {
+			writeFile(t, filepath.Join(g, "hooks/pre-commit.sample"), "ignored\n")
+			writeFile(t, filepath.Join(g, "hooks/pre-commit"), "#!/bin/sh\n")
+		}, "git hook"},
 		{"rebase exec", ".git/rebase-merge/git-rebase-todo", func(t *testing.T, g string) {
 			writeFile(t, filepath.Join(g, "rebase-merge/git-rebase-todo"), "pick abc x\nexec touch /tmp/pwned\n")
 		}, "exec lines"},

@@ -205,8 +205,46 @@ func readOnlyProject(ws string) []string {
 		if fi, err := os.Lstat(filepath.Join(ws, gitConfig)); err == nil && fi.Mode().IsRegular() {
 			out = append(out, gitConfig)
 		}
+		out = append(out, hookDirs(ws)...)
 	}
 	return out
+}
+
+// hookDirs lists the existing hooks directories of .git and of the submodule
+// git directories under .git/modules, so hooks run for the agent's commits
+// but cannot be changed. Absent ones are not created: one the agent creates
+// is reported by the integrity check.
+func hookDirs(ws string) []string {
+	var out []string
+	isDir := func(p string) bool { fi, err := os.Lstat(p); return err == nil && fi.IsDir() }
+	if isDir(filepath.Join(ws, ".git", "hooks")) {
+		out = append(out, ".git/hooks")
+	}
+	_ = filepath.WalkDir(filepath.Join(ws, ".git", "modules"), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		if fi, err := os.Lstat(filepath.Join(filepath.Dir(p), "HEAD")); err != nil || !fi.Mode().IsRegular() {
+			return nil // not inside a git directory: a path segment of a submodule name
+		}
+		switch d.Name() { // inside a submodule git directory: only hooks and nested modules matter
+		case "hooks":
+			out = append(out, filepath.ToSlash(mustRel(ws, p)))
+			return fs.SkipDir
+		case "modules":
+			return nil
+		}
+		return fs.SkipDir
+	})
+	return out
+}
+
+func mustRel(root, p string) string {
+	r, err := filepath.Rel(root, p)
+	if err != nil {
+		return p
+	}
+	return r
 }
 
 const gitConfig = ".git/config"

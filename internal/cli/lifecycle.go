@@ -52,10 +52,25 @@ type actionResult struct {
 	Name         string                `json:"name"`
 	Action       string                `json:"action"`
 	GitIntegrity *sandbox.GitIntegrity `json:"git_integrity,omitempty"`
+	Info         string                `json:"info,omitempty"`
 }
 
-func (a *app) done(name, action string, g *sandbox.GitIntegrity) error {
-	return a.out.Print(actionResult{name, action, g}, func(w io.Writer) { fmt.Fprintf(w, "%s %s\n", name, action) })
+func (a *app) done(name, action string, g *sandbox.GitIntegrity, info string) error {
+	return a.out.Print(actionResult{name, action, g, info}, func(w io.Writer) { fmt.Fprintf(w, "%s %s\n", name, action) })
+}
+
+// hookNotice prints, once per launch, which worktree files define git
+// hooks the agent can modify.
+func (a *app) hookNotice(m *sandbox.Manager, name string) string {
+	meta, err := m.Store.Load(name)
+	if err != nil {
+		return ""
+	}
+	n := sandbox.HookNotice(meta)
+	if n != "" {
+		a.out.Info("info: %s", n)
+	}
+	return n
 }
 
 // gitCheck compares the sandbox's .git with its fingerprint and warns on
@@ -76,8 +91,9 @@ func (a *app) gitCheck(m *sandbox.Manager, name string) *sandbox.GitIntegrity {
 	return g
 }
 
-// simple builds start/stop: one sandbox name, one manager call.
-func (a *app) simple(use, short, action string, do func(*sandbox.Manager, context.Context, string) error) *cobra.Command {
+// simple builds start/stop: one sandbox name, one manager call; launch
+// adds the hook notice.
+func (a *app) simple(use, short, action string, launch bool, do func(*sandbox.Manager, context.Context, string) error) *cobra.Command {
 	return &cobra.Command{
 		Use: use + " <sandbox>", Short: short, Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -88,14 +104,18 @@ func (a *app) simple(use, short, action string, do func(*sandbox.Manager, contex
 			if err := do(m, cmd.Context(), args[0]); err != nil {
 				return classify(err)
 			}
-			return a.done(args[0], action, a.gitCheck(m, args[0]))
+			info := ""
+			if launch {
+				info = a.hookNotice(m, args[0])
+			}
+			return a.done(args[0], action, a.gitCheck(m, args[0]), info)
 		},
 	}
 }
 
 func (a *app) lifecycleCmds() []*cobra.Command {
-	start := a.simple("start", "Start a sandbox (recreating stopped containers with fresh masks)", "started", (*sandbox.Manager).Start)
-	stop := a.simple("stop", "Stop a sandbox's agent and proxy", "stopped", (*sandbox.Manager).Stop)
+	start := a.simple("start", "Start a sandbox (recreating stopped containers with fresh masks)", "started", true, (*sandbox.Manager).Start)
+	stop := a.simple("stop", "Stop a sandbox's agent and proxy", "stopped", false, (*sandbox.Manager).Stop)
 	var volumes bool
 	rm := &cobra.Command{
 		Use: "rm <sandbox>", Short: "Remove a sandbox's containers, network and state", Args: cobra.ExactArgs(1),
@@ -108,7 +128,7 @@ func (a *app) lifecycleCmds() []*cobra.Command {
 			if err := m.Remove(cmd.Context(), args[0], volumes); err != nil {
 				return classify(err)
 			}
-			return a.done(args[0], "removed", g)
+			return a.done(args[0], "removed", g, "")
 		},
 	}
 	rm.Flags().BoolVar(&volumes, "volumes", false, "also remove the agent home volume (loses agent login)")
