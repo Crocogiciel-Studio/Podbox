@@ -76,7 +76,7 @@ status: pending
 
 > Close the runtime questions of the spec.
 
-1. When a kiro image can be built, run `podbox run kiro` and confirm Kiro cites the steering content; otherwise record Kiro loading as unverified in the pull request.
+1. Run `podbox run kiro` and confirm Kiro cites the steering content; if no logged-in Kiro is available, record the live check as unverified in the pull request.
 2. Run `podbox run claude` once logged in and confirm the first turn knows the sandbox and the allow command.
 3. Contributor checks: `make lint test`, `make cross`, `make e2e`.
 

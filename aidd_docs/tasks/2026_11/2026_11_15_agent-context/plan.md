@@ -21,13 +21,13 @@ Source: aidd_docs/tasks/2026_11/2026_11_15_agent-context/spec.md
 | --- | --------------- |
 | https://code.claude.com/docs/en/memory | `~/.claude/CLAUDE.md` is a user-scope instruction file loaded in every session, for every project |
 | https://code.claude.com/docs/en/skills | personal skills live in `~/.claude/skills/<name>/SKILL.md`; only the name and description are listed at session start, the body loads when the description matches; no field is required |
-| https://kiro.dev/docs/steering/ | global steering files live in `~/.kiro/steering/` and apply to all workspaces (found through search; the CLI steering page answered 403 from the sandbox) |
+| https://kiro.dev/docs/steering/ | global steering for the CLI: markdown files in `~/.kiro/steering/`, applied to all workspaces; a file without front matter is loaded in every interaction (`always` is the default); workspace steering wins on conflict; CLI V3 (kiro-cli 3.0+, the image has 3.3.0) applies steering |
 
 ## Impact
 
 | Category | Verdict and evidence | Handled in |
 | -------- | -------------------- | ---------- |
-| runtime | Claude Code loading of `~/.claude/CLAUDE.md` and personal skills: validated by the official docs, not run end to end here (needs a logged-in Claude in the image). Kiro CLI loading of `~/.kiro/steering/`: documented, unverified in the shipped image (installer unreachable from this sandbox, image marked experimental) | 3 |
+| runtime | Claude Code loading of `~/.claude/CLAUDE.md` and personal skills: validated by the official docs, not run end to end here (needs a logged-in Claude in the image). Kiro CLI loading of `~/.kiro/steering/`: validated by the official docs for CLI V3, not run in the shipped image (login unverified, image marked experimental) | 3 |
 | regression | `agentSpec` (agentspec.go, TestAgentSpecHardening), `createAgent`, `Start`, `RefreshPolicy`, `policy reload` (project.go) and `policy allow|deny` change; covered by internal/sandbox tests, e2e lifecycle and evasion suites; risk low; no safety-net phase | 1, 3 |
 | architecture | one new package `internal/agentctx` (pure: templates, rendering, block merge); `sandbox` owns the exec into the container and the policy view mount; `runtime.Runtime` unchanged | 2, 3 |
 | documentation | README (commands, known limits), docs/security-model.md (new "Agent context" section: what the agent can read, that the context informs and does not enforce), docs/policy.md (the agent's view) | 3 |

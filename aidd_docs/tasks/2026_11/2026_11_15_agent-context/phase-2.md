@@ -40,7 +40,7 @@ status: pending
 
 1. Write `claude-block.md`: the sandbox name is the value of `$PODBOX_SANDBOX` and the workspace is in `/run/podbox/policy.json`, and the text names no sandbox because the home is shared by every sandbox of the agent; network only through the allowlist proxy; a refused request (403 on CONNECT or an HTTP refusal naming podbox) is policy, not an outage; the exact commands for the human with the real name; never bypass (no other proxy, tunnel, route, no editing policy); the policy is readable at `/run/podbox/policy.json`; you cannot run `podbox`; point to the `podbox-sandbox` skill.
 2. Write `claude-skill.md` with `name: podbox-sandbox` and a `description` that fires on failed requests, 403, blocked hosts, push and masked files; body: reading a refusal, asking for a host with ports (`--port N`), masked `.env` and keys are empty on purpose, `git push` is not possible in v0.1 so ask the human to run `git -C {{workspace}} push`.
-3. Write `kiro-steering.md` as the same short block plus the guide, in one file.
+3. Write `kiro-steering.md` as the same short block plus the guide, in one file, with no front matter so Kiro loads it in every interaction.
 
 ### `2)` Render and merge
 
