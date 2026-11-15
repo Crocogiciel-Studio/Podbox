@@ -302,6 +302,7 @@ func (m *Manager) Start(ctx context.Context, name string) (err error) {
 			return err
 		}
 	}
+	m.installContext(ctx, meta)
 	return nil
 }
 
