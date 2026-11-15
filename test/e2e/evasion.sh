@@ -2,12 +2,20 @@
 # Asserts every isolation condition of a podbox sandbox against real podman.
 # Exits non-zero on any escape. Env: PODBOX (binary), E2E_ALLOWED_HOST,
 # E2E_EXTRA_HOST (reachable but not allowlisted by default), E2E_ATTACK_HOST
-# (a host the agent tries to allowlist itself).
+# (a host the agent tries to allowlist itself), E2E_F1_HOST (a host denied
+# globally); all four must differ.
 . "$(dirname "$0")/lib.sh"
 
 ALLOWED=${E2E_ALLOWED_HOST:-registry.npmjs.org}
 EXTRA=${E2E_EXTRA_HOST:-proxy.golang.org}
 ATTACK=${E2E_ATTACK_HOST:-example.com}
+F1HOST=${E2E_F1_HOST:-example.net}
+# Each section changes the policy for its own host; a shared host would let
+# one section's deny decide another's check.
+if [ "$(printf '%s\n' "$ALLOWED" "$EXTRA" "$ATTACK" "$F1HOST" | sort -u | wc -l)" -ne 4 ]; then
+	echo "E2E_ALLOWED_HOST, E2E_EXTRA_HOST, E2E_ATTACK_HOST and E2E_F1_HOST must differ" >&2
+	exit 2
+fi
 NAME=e2e
 UPNAME=e2e-up
 MVNAME=e2e-mv
@@ -341,7 +349,6 @@ check "ls JSON reports no project change after reload" ls_project_clean
 echo "== project policy reached through an agent symlink (F1)"
 # The agent links .podbox to the podbox config directory; policy allow
 # --scope project must not write through it (the global deny stays a deny).
-F1HOST=${E2E_F1_HOST:-example.net}
 GLOBAL=$PODBOX_HOME/config/policy.yaml
 mkdir -p "$PODBOX_HOME/config"
 printf 'rules:\n  - host: %s\n    allow: false\n' "$F1HOST" >"$GLOBAL"

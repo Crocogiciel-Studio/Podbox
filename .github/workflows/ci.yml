@@ -41,6 +41,6 @@ jobs:
       - name: Evasion suite
         run: PODBOX=$PWD/bin/podbox test/e2e/evasion.sh
         env:
-          E2E_EXTRA_HOST: example.com
+          E2E_EXTRA_HOST: example.org
       - name: Lifecycle suite
         run: PODBOX=$PWD/bin/podbox test/e2e/lifecycle.sh
