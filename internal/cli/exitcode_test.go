@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/hostgit"
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
@@ -55,6 +56,13 @@ func TestExitCodes(t *testing.T) {
 		{"git-check findings", output.ExitStatus(output.ExitGitIntegrity), output.ExitGitIntegrity},
 		{"unreadable workspace", unreadable, output.ExitMasks},
 		{"missing masked path", workspace.MissingError("s", []string{"a.key"}), output.ExitMasks},
+		{"git missing", hostgit.ErrMissing, output.ExitPrereq},
+		{"git too old", fmt.Errorf("%w (found 2.20.0)", hostgit.ErrTooOld), output.ExitPrereq},
+		{"not a repository", fmt.Errorf("%w: /x", hostgit.ErrNotRepo), output.ExitUsage},
+		{"not the top level", fmt.Errorf("%w: /x/y", hostgit.ErrNotTopLevel), output.ExitUsage},
+		{"empty repository", fmt.Errorf("%w: /x", hostgit.ErrEmptyRepo), output.ExitUsage},
+		{"clone exists", fmt.Errorf("%w for s", sandbox.ErrCloneExists), output.ExitGeneric},
+		{"mode mismatch", fmt.Errorf("%w: s", sandbox.ErrModeMismatch), output.ExitGeneric},
 	}
 	for _, c := range cases {
 		if c.err == nil {

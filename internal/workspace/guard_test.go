@@ -7,6 +7,30 @@ import (
 	"testing"
 )
 
+// A clone sandbox's clone lives in <state>/clones/<name>, inside the owned
+// state directory: CheckRoot refuses it by design, so podbox must apply
+// CheckRoot to the project path only and never to the clone directory.
+func TestCheckRootRefusesTheCloneDirectory(t *testing.T) {
+	home := t.TempDir()
+	state := filepath.Join(home, ".local", "share", "podbox")
+	clone := filepath.Join(state, "clones", "x")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRoot(clone, home, []string{state}); !errors.Is(err, ErrUnsafe) {
+		t.Fatalf("CheckRoot(clone) = %v: the clone directory must never be given to CheckRoot", err)
+	}
+	// ... while the mask engine takes it like any workspace.
+	if _, err := Resolve(clone, nil, nil); err != nil {
+		t.Fatalf("Resolve on a clone directory: %v", err)
+	}
+	r, err := OpenRoot(clone)
+	if err != nil {
+		t.Fatalf("OpenRoot on a clone directory: %v", err)
+	}
+	r.Close()
+}
+
 func TestCheckRoot(t *testing.T) {
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
