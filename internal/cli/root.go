@@ -61,10 +61,8 @@ func classify(err error, started bool) error {
 		code = output.ExitNotFound
 	case errors.Is(err, workspace.ErrMasks):
 		code = output.ExitMasks
-	case errors.Is(err, workspace.ErrUnsafe), errors.Is(err, policy.ErrInvalid):
+	case errors.Is(err, workspace.ErrUnsafe), errors.Is(err, policy.ErrInvalid), errors.Is(err, sandbox.ErrBadWorkspace):
 		code = output.ExitUsage
-	case errors.Is(err, sandbox.ErrExists), errors.Is(err, sandbox.ErrNotRunning):
-		code = output.ExitGeneric
 	case errors.As(err, &cmdErr), errors.As(err, &pathErr), errors.As(err, &linkErr), errors.As(err, &sysErr):
 		code = output.ExitRuntime // podman or a host file operation failed
 	}

@@ -125,7 +125,7 @@ func (a *app) ensureSandbox(ctx context.Context, m *sandbox.Manager, name, agent
 	case err != nil:
 		return err
 	case meta.Agent != agent || meta.Workspace != ws:
-		return output.Errorf(output.ExitUsage, "sandbox %s already exists for %s on %s; pick another --name", name, meta.Agent, meta.Workspace)
+		return output.Errorf(output.ExitGeneric, "sandbox %s already exists for %s on %s; pick another --name", name, meta.Agent, meta.Workspace)
 	}
 	return nil
 }

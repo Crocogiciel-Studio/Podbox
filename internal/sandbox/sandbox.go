@@ -26,6 +26,9 @@ var ErrExists = errors.New("sandbox already exists")
 // ErrNotRunning reports a stopped sandbox.
 var ErrNotRunning = errors.New("sandbox is not running")
 
+// ErrBadWorkspace reports a workspace path that is missing or not a directory.
+var ErrBadWorkspace = errors.New("workspace is not a directory")
+
 // Manager drives sandbox lifecycles.
 type Manager struct {
 	RT     runtime.Runtime
@@ -76,7 +79,7 @@ func (m *Manager) Create(ctx context.Context, name, agentName, ws string) (meta 
 		return meta, imp, err
 	}
 	if fi, err := os.Stat(ws); err != nil || !fi.IsDir() {
-		return meta, imp, fmt.Errorf("workspace %s is not a directory", ws)
+		return meta, imp, fmt.Errorf("%w: %s", ErrBadWorkspace, ws)
 	}
 	if err := workspace.CheckRoot(ws, m.Home, m.Owned); err != nil {
 		return meta, imp, err

@@ -45,6 +45,7 @@ func TestExitCodes(t *testing.T) {
 		{"sandbox exists", fmt.Errorf("%w: s", sandbox.ErrExists), output.ExitGeneric},
 		{"sandbox not running", fmt.Errorf("%w: s", sandbox.ErrNotRunning), output.ExitGeneric},
 		{"unsafe workspace", workspace.CheckRoot(home, home, nil), output.ExitUsage},
+		{"workspace not a directory", fmt.Errorf("%w: /nope", sandbox.ErrBadWorkspace), output.ExitUsage},
 		{"invalid rule", policy.SetRule(filepath.Join(t.TempDir(), "s.yaml"), "a*b", true, nil), output.ExitUsage},
 		{"invalid port", policy.SetRule(filepath.Join(t.TempDir(), "s.yaml"), "example.com", true, []int{0}), output.ExitUsage},
 		{"prerequisite", output.Wrap(output.ExitPrereq, errors.New("no podman"), "podman not found"), output.ExitPrereq},

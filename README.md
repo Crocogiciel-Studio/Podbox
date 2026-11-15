@@ -87,7 +87,7 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 | --- | --- |
 | 0 | success |
 | 1 | generic error (sandbox exists, sandbox not running, ...) |
-| 2 | usage error (bad flag, argument, agent, `--output` value or policy rule, unsafe workspace) |
+| 2 | usage error (bad flag, argument, agent, `--output` value or policy rule, unsafe or missing workspace) |
 | 3 | prerequisite missing (see `podbox doctor`) |
 | 4 | not found (sandbox) |
 | 5 | runtime error (podman or a host file operation failed, e.g. an unwritable state directory) |
