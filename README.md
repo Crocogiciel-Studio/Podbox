@@ -55,21 +55,40 @@ podbox policy show claude-my-project
 
 | Command | Role |
 | --- | --- |
-| `run <agent> [path] [--name]` | create if absent, start, open an agent session |
-| `create <agent> [path] [--name]` | create a sandbox without starting it |
+| `run <agent> [path] [--name] [--clone]` | create if absent, start, open an agent session |
+| `create <agent> [path] [--name] [--clone]` | create a sandbox without starting it; `--clone` gives the agent its own git clone of the committed HEAD instead of the project directory, see [clone mode](#clone-mode) |
 | `start <name>` / `stop <name>` | start (recreating stopped containers with fresh masks, and rewriting the [agent context](docs/security-model.md#agent-context) in the agent home) / stop |
-| `rm <name> [--volumes]` | remove containers, network and state; `--volumes` also drops the agent login |
-| `ls` | list sandboxes, from podman labels and the state directory |
+| `rm <name> [--volumes]` | remove containers, network and state; `--volumes` also drops the agent login and a clone sandbox's clone, which `rm` otherwise keeps and locates |
+| `ls` | list sandboxes (name, agent, mode `shared` or `clone`, state, proxy, workspace), from podman labels and the state directory; a clone left with no sandbox shows with state `missing` |
 | `exec <name> -- <cmd>...` | run a command in the workspace, exit with its code |
 | `attach <name>` | open a new agent session in a running sandbox |
-| `git-check <name> [--accept]` | compare `.git` with the fingerprint taken at creation, exit 6 on suspicious changes; `--accept` re-records it |
+| `git-check <name> [--accept]` | compare `.git` with the fingerprint taken at creation, exit 6 on suspicious changes; `--accept` re-records it; says it does not apply (exit 0) to a clone sandbox |
 | `policy show\|allow\|deny\|reload <name> [host]` | inspect and change the allowlist from the host; `reload --forget-missing` also drops recorded masks found nowhere |
 | `policy log <name> [--denied] [--follow] [--since 10m]` | the proxy's decisions, with the fix command for each refusal; exit 4 for an unknown sandbox, 1 when it is not running |
 | `image build <image>... [--force]` / `image ls` | build `proxy`, `base`, `claude`, `kiro`, `shell` |
-| `doctor [--pull]` | check prerequisites, including that `images.base` is present; `--pull` pulls it when absent |
+| `doctor [--pull]` | check prerequisites, including that `images.base` is present; `--pull` pulls it when absent; git is reported as optional (a warning, never a failure) |
 | `version` | build information |
 
 Every command accepts `--output json` (`-o json`).
+
+## Clone mode
+
+```sh
+cd ~/code/untrusted-project
+podbox run claude --clone
+```
+
+By default the agent works on your project directory (`shared` mode). With `--clone` it works on its own git clone, made once at creation from the repository's committed HEAD, and your working tree is never mounted. Use it for code you do not trust: the agent cannot reach your `.git`, so your hooks, configuration and objects stay out of its reach. The mode is fixed at creation and shown by `ls`.
+
+- The clone holds the committed content only. `create` prints the base commit, the clone path and how many uncommitted and untracked files were left out.
+- It lives in podbox's state directory (`<state>/clones/<name>`) and appears in the agent at the project's usual absolute path, so paths and tools match shared mode.
+- It shares no object with your repository and carries no remote, no git configuration, no hook and no credential. podbox sets no git identity either: the agent or you configure one (`git config` in the clone, or `GIT_AUTHOR_*` and `GIT_COMMITTER_*` in the environment).
+- Masks, `.sandboxignore`, the network policy and every container guarantee apply unchanged. A tracked file masked by `.sandboxignore` is empty in the agent's view; an untracked secret is not in the clone at all.
+- The git protections of shared mode (read-only hooks and config, fingerprint, `git-check`, hook notice) are off: the repository is the agent's, and the host never runs git inside it.
+- `rm` keeps the clone because it holds the agent's work, and prints where; `rm <name> --volumes` deletes it. `create` refuses a name whose clone remains.
+- Needs git 2.29 or newer on the host, for `--clone` only; `podbox doctor` warns when it is missing.
+
+The agent's work cannot yet be brought back to the host with podbox: `podbox diff` and `podbox export` come next. Until then, read the clone at the path `create` printed.
 
 ## Configuration
 
@@ -92,9 +111,9 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 | Code | Meaning |
 | --- | --- |
 | 0 | success |
-| 1 | generic error (sandbox exists, sandbox not running, ...) |
-| 2 | usage error (bad flag, argument, agent, `--output` value or policy rule, unsafe or missing workspace) |
-| 3 | prerequisite missing (see `podbox doctor`) |
+| 1 | generic error (sandbox exists, sandbox not running, a clone remains for the name, mode mismatch on `run`, ...) |
+| 2 | usage error (bad flag, argument, agent, `--output` value or policy rule, unsafe or missing workspace; `--clone` on a directory that is not the top level of a git repository with a commit) |
+| 3 | prerequisite missing (see `podbox doctor`; git for `--clone`) |
 | 4 | not found (sandbox) |
 | 5 | runtime error (podman or a host file operation failed, e.g. an unwritable state directory) |
 | 6 | `git-check` found suspicious `.git` changes |
@@ -112,6 +131,7 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 - An allowlisted host is reachable on ports 80 and 443 only; list other ports with `ports:` on the rule or `podbox policy allow <name> <host> --port N`.
 - Only HTTP(S) leaves the sandbox: no SSH git remotes, no databases.
 - The agent context tells Claude and Kiro that they are sandboxed and what to ask the human; it informs and enforces nothing, the proxy and the container do. It is verified by the e2e suite, not against a live Claude or Kiro session.
+- Clone mode: a repository's submodules and LFS files are only what a plain `git clone` gives; each clone is a full copy of the repository's history on disk; a masked tracked file is empty in the clone, so a commit by the agent can record it as emptied; there is no way back to the host yet in this release.
 - macOS and Windows are designed for but not tested in CI.
 
 ## License

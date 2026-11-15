@@ -62,7 +62,7 @@ The residual risk is hook managers that read worktree files: `core.hooksPath` po
 - At `create`, `start` and `run`, when the project has such files, podbox prints one `info:` line naming them (and an `info` field in the JSON output of `create` and `start`).
 - Their sha256 (recursively for directories, bounded to the first 1000 files in name order; symbolic links by target) is part of the git fingerprint. Past the cap, every check reports one finding, `hook files exceed cap (N > 1000), not fully verified`, instead of per-file changes. Each changed, added or removed file is reported after the session under `GIT HOOK FILES CHANGED`, with the other findings: review the diff before committing on the host, then `podbox git-check <name> --accept`.
 
-For untrusted code, use the upcoming `--clone` mode. Hook installers fail inside the sandbox: `husky` cannot set `core.hooksPath` because `.git/config` is read-only, and `lefthook install` or `pre-commit install` cannot write the read-only `.git/hooks/`. Run the install once on the host.
+For untrusted code, use [clone mode](#clone-mode). Hook installers fail inside the sandbox: `husky` cannot set `core.hooksPath` because `.git/config` is read-only, and `lefthook install` or `pre-commit install` cannot write the read-only `.git/hooks/`. Run the install once on the host.
 
 ## Git directory integrity
 
@@ -72,7 +72,25 @@ podbox detects these, it does not prevent them. At `create` (or the first `start
 
 The live `.git` is compared with the fingerprint after `run`, `attach` and `exec` return, and on `start`, `stop`, `rm` and `ls`. Any difference prints a warning on stderr, once per command (`ls` groups sandboxes sharing a workspace and findings), listing each path and why it matters, and adds `git_integrity` (`ok`, `findings`) to the JSON output; exit codes are unchanged. `podbox git-check <name>` runs the comparison alone and exits 6 on findings. On a warning, do not run git in that repository until you have reviewed the listed paths; remove what you did not create, then `podbox git-check <name> --accept` re-records the fingerprint. A change you made yourself on the host (for example `git remote add`, which rewrites `.git/config`) is reported too and needs the same acceptance.
 
-The check runs when podbox does: a git command you run on the host before any podbox command is not protected. For untrusted work, prefer the upcoming `--clone` mode, which keeps the agent away from the host repository's git directory.
+The check runs when podbox does: a git command you run on the host before any podbox command is not protected. For untrusted work, prefer [clone mode](#clone-mode), which keeps the agent away from the host repository's git directory; `git-check` does not apply to a clone sandbox.
+
+## Clone mode
+
+With `--clone` the agent's workspace is its own git clone of the project's committed HEAD, not the project directory. It is the mode for code you do not trust.
+
+What the agent can reach: the clone, mounted at the project's usual path, and nothing of the host repository. It holds committed content only: no uncommitted or untracked file, no host remote, no git configuration, no hook, no credential.
+
+How the clone is made, and why:
+
+- podbox clones from a `file://` URL with `--no-hardlinks`. A plain-path clone copies the whole object directory, including unreachable objects such as a deleted secret; the `file://` transport sends only what the cloned branch reaches, and no object is shared or hard-linked with the host repository, so the agent cannot alter the host's object store.
+- The clone starts from an empty template directory, so no host hook is installed, and `origin` and the branch tracking are removed, so no remote or URL remains. podbox checks the fresh configuration holds none.
+- The clone lives in `<state>/clones/<name>`, outside the sandbox's own state directory that the proxy container mounts, so the proxy never sees files the agent wrote. It is still inside podbox's state directory, so the workspace refusal (`CheckRoot`) is applied to the project path only and never to the clone, and the mask engine walks the clone like any workspace.
+
+Why `.git` is writable in a clone: the shared-mode protections exist because git on the host trusts a git directory the agent can write. Here that directory is the agent's own, and the host never runs git inside it. Everything that runs git on the host goes through one package (`internal/hostgit`) with an environment stripped of every `GIT_*` variable and with fsmonitor, hooks and external protocols disabled, and it runs only on the host repository. All the git protections are switched off in one place (`gitguard.Guard`).
+
+Masks, `.sandboxignore`, the network policy, the agent context and every container hardening guarantee are the same as in shared mode. A tracked file masked by `.sandboxignore` is empty in the agent's view; the agent can still commit it as emptied.
+
+The commits the agent makes stay in the clone. Limits: submodules and LFS only as a plain clone gives them; no git identity is set; there is no export of the agent's work to the host in this release.
 
 ## Agent context
 
