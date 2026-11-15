@@ -117,7 +117,26 @@ func (c Changes) Empty() bool {
 // reports the difference with the previous snapshot. An unreadable file is
 // snapshotted as absent, with a warning.
 func (s Store) Snapshot(m Meta) (Changes, error) {
+	c, live, err := s.readProject(m)
+	if err != nil {
+		return c, err
+	}
+	return c, s.writeProject(live)
+}
+
+// liveFile is a project file as read from the workspace; ok is false when
+// absent or unreadable.
+type liveFile struct {
+	projectFile
+	b  []byte
+	ok bool
+}
+
+// readProject reads the project files and diffs them with the snapshot,
+// writing nothing.
+func (s Store) readProject(m Meta) (Changes, []liveFile, error) {
 	var c Changes
+	var out []liveFile
 	for _, f := range s.projectFiles(m.Name) {
 		live, ok, err := readLive(m.Workspace, f.rel)
 		if err != nil {
@@ -126,24 +145,104 @@ func (s Store) Snapshot(m Meta) (Changes, error) {
 		}
 		old, _, err := readSnap(f.snap)
 		if err != nil {
-			return c, err
+			return c, nil, err
 		}
 		if f.rel == ProjectPolicyRel {
 			c.RulesAdded, c.RulesRemoved = diff(ruleKeys(old), ruleKeys(live))
 		} else {
 			c.IgnoreAdded, c.IgnoreRemoved = diff(ignoreLines(old), ignoreLines(live))
 		}
-		if !ok {
+		out = append(out, liveFile{f, live, ok})
+	}
+	return c, out, nil
+}
+
+// writeProject replaces the snapshot with what readProject read.
+func (s Store) writeProject(files []liveFile) error {
+	for _, f := range files {
+		if !f.ok {
 			if err := os.Remove(f.snap); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return c, err
+				return err
 			}
 			continue
 		}
-		if err := policy.WriteAtomic(f.snap, live); err != nil {
-			return c, err
+		if err := policy.WriteAtomic(f.snap, f.b); err != nil {
+			return err
 		}
 	}
-	return c, nil
+	return nil
+}
+
+// Reload is podbox policy reload, all or nothing: it reads the project
+// files, resolves the masks with the new .sandboxignore and compiles the
+// policy with the new project rules, and writes the snapshot, the mask
+// record and the effective policy only when all of that succeeded, so a
+// refused reload (e.g. an unreadable workspace directory) changes nothing.
+func (s Store) Reload(m Meta, forgetMissing bool) (Changes, policy.Effective, error) {
+	c, live, err := s.readProject(m)
+	if err != nil {
+		return c, policy.Effective{}, err
+	}
+	var ignore, rules []byte
+	var hasRules bool
+	for _, f := range live {
+		switch {
+		case f.rel == workspace.IgnoreFile && f.ok:
+			ignore = f.b
+		case f.rel == ProjectPolicyRel:
+			rules, hasRules = f.b, f.ok
+		}
+	}
+	ts, err := s.loadMasks(m.Name)
+	if err != nil {
+		return c, policy.Effective{}, err
+	}
+	res, err := workspace.Resolve(m.Workspace, ignore, ts)
+	if err != nil {
+		return c, policy.Effective{}, err
+	}
+	kept, dropped := workspace.Shrink(res, ignore, forgetMissing)
+	c.MasksDropped = dropped
+	if !forgetMissing {
+		c.MasksMissing = res.Missing
+	}
+	e, err := s.compileWith(m, rules, hasRules)
+	if err != nil {
+		return c, e, err
+	}
+	if err := s.writeProject(live); err != nil {
+		return c, e, err
+	}
+	if err := s.saveMasks(m.Name, kept); err != nil {
+		return c, e, err
+	}
+	return c, e, policy.WriteEffective(s.EffectivePath(m.Name), e)
+}
+
+// compileWith compiles the policy with the given project rules in place of
+// the snapshot, through a temporary file removed afterwards.
+func (s Store) compileWith(m Meta, rules []byte, ok bool) (policy.Effective, error) {
+	src := s.Sources(m)
+	src.Project = ""
+	if ok {
+		f, err := os.CreateTemp(s.Dir(m.Name), ".reload-policy-*.yaml")
+		if err != nil {
+			return policy.Effective{}, err
+		}
+		defer os.Remove(f.Name())
+		_, werr := f.Write(rules)
+		if err := errors.Join(werr, f.Close()); err != nil {
+			return policy.Effective{}, err
+		}
+		src.Project = f.Name()
+	}
+	e := policy.Compile(src)
+	for i, w := range e.Warnings { // name the snapshot the policy is read from
+		if src.Project != "" {
+			e.Warnings[i] = strings.ReplaceAll(w, src.Project, s.ProjectPolicyPath(m.Name))
+		}
+	}
+	return e, nil
 }
 
 // Drift lists the project files whose workspace copy differs from the

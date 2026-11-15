@@ -58,19 +58,12 @@ func (a *app) policyReloadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			c, err := st.Snapshot(m)
+			c, e, err := st.Reload(m, forgetMissing)
 			if err != nil {
-				return err
-			}
-			if c.MasksDropped, c.MasksMissing, err = st.ReloadMasks(m, forgetMissing); err != nil {
 				return classify(err)
 			}
 			if err := workspace.MissingError(m.Name, c.MasksMissing); err != nil {
 				c.Warnings = append(c.Warnings, "kept the missing mask records; "+err.Error())
-			}
-			e, err := st.RefreshPolicy(m)
-			if err != nil {
-				return err
 			}
 			c.Warnings = append(c.Warnings, e.Warnings...)
 			for _, w := range c.Warnings {

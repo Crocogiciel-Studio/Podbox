@@ -225,8 +225,10 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 }
 
 // Start (re)creates stopped containers with current images, masks and
-// policy (from the project snapshot), then starts proxy and agent.
-func (m *Manager) Start(ctx context.Context, name string) error {
+// policy (from the project snapshot), then starts proxy and agent. On any
+// failure it removes the containers it created or started, so a refused
+// start (e.g. masks it cannot verify) leaves no proxy running.
+func (m *Manager) Start(ctx context.Context, name string) (err error) {
 	meta, err := m.Store.Load(name)
 	if err != nil {
 		return err
@@ -248,26 +250,39 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	if _, err := ensureNetwork(ctx, m.RT, runtime.NetworkSpec{Name: EgressNetwork, Labels: map[string]string{LabelShared: "egress"}}); err != nil {
 		return err
 	}
+	var touched []string // containers this call created or started
+	defer func() {
+		if err == nil {
+			return
+		}
+		for _, c := range touched {
+			if rerr := m.RT.ContainerRemove(context.WithoutCancel(ctx), c); rerr != nil && !errors.Is(rerr, runtime.ErrNotFound) {
+				err = errors.Join(err, fmt.Errorf("cleanup after the failed start: %w", rerr))
+			}
+		}
+	}()
 	for _, c := range []struct {
 		name   string
 		create func(context.Context, Meta) error
 	}{{proxyContainer(name), m.createProxy}, {agentContainer(name), m.createAgent}} {
-		st, err := m.RT.ContainerInspect(ctx, c.name)
+		st, ierr := m.RT.ContainerInspect(ctx, c.name)
 		switch {
-		case err == nil && st.Running():
+		case ierr == nil && st.Running():
 			continue
-		case err == nil && st.State == "created":
+		case ierr == nil && st.State == "created":
+			touched = append(touched, c.name)
 			if err := m.RT.ContainerStart(ctx, c.name); err != nil {
 				return err
 			}
 			continue
-		case err == nil:
+		case ierr == nil:
 			if err := m.RT.ContainerRemove(ctx, c.name); err != nil {
 				return err
 			}
-		case !errors.Is(err, runtime.ErrNotFound):
-			return err
+		case !errors.Is(ierr, runtime.ErrNotFound):
+			return ierr
 		}
+		touched = append(touched, c.name)
 		if err := c.create(ctx, meta); err != nil {
 			return err
 		}

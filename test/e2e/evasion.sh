@@ -15,6 +15,7 @@ HKNAME=e2e-hooks
 MKNAME=e2e-masks
 URNAME=e2e-unread
 WTNAME=e2e-wt
+HLNAME=e2e-links
 UPSTREAM_CTR=podbox-e2e-upstream
 WORK=$(mktemp -d)
 PROJ=$WORK/project
@@ -29,6 +30,7 @@ cleanup() {
 	pb rm "$MKNAME" >/dev/null 2>&1
 	pb rm "$URNAME" >/dev/null 2>&1
 	pb rm "$WTNAME" >/dev/null 2>&1
+	pb rm "$HLNAME" >/dev/null 2>&1
 	pb rm e2e-home >/dev/null 2>&1
 	pb rm "$NAME" --volumes >/dev/null 2>&1
 	chmod -R u+rwx "$WORK" 2>/dev/null
@@ -179,6 +181,15 @@ for f in config2/prod.yaml s2/data.txt dk2/config.json; do
 	blocked "read $f after rename + stop/start" sx "$MKNAME" "grep -q secret $f"
 done
 check "renamed secrets intact on the host" grep -q prod-secret "$MK/config2/prod.yaml"
+mk_reload() { pb policy reload "$MKNAME" 2>/dev/null; }
+mk_hidden() { for f in config2/prod.yaml s2/data.txt; do ! sx "$MKNAME" "grep -q secret $f" || return 1; done; }
+blocked "plain policy reload after the rename drops a moved mask" grep -q -- "- mask" <<<"$(mk_reload)"
+pb stop "$MKNAME" >/dev/null 2>&1 && pb start "$MKNAME" >/dev/null 2>&1
+check "moved files still masked after reload + stop/start" mk_hidden
+: >"$MK/.sandboxignore"
+blocked "reload without the patterns drops a moved mask" grep -q -- "- mask" <<<"$(mk_reload)"
+pb stop "$MKNAME" >/dev/null 2>&1 && pb start "$MKNAME" >/dev/null 2>&1
+check "moved files still masked without their patterns" mk_hidden
 pb rm "$MKNAME" >/dev/null 2>&1
 
 echo "== unreadable or missing masked paths refuse the start"
@@ -192,22 +203,54 @@ pb create shell "$UR" --name "$URNAME" >/dev/null 2>&1 && pb start "$URNAME" >/d
 check "agent makes the parents of masked files unreadable" sx "$URNAME" "chmod 000 '$UR/sub' '$UR/sub2'"
 pb stop "$URNAME" >/dev/null 2>&1
 check "start refused (exit 7)" test "$(ur_start)" = 7
+ur_none() { [ -z "$(podman ps -a -q --filter label=io.podbox.sandbox="$URNAME")" ]; }
+check "refused start leaves no podbox container" ur_none
+echo 'extra.txt' >>"$UR/.sandboxignore"
+ur_reload() { pb policy reload "$URNAME" >"$WORK/ur.reload" 2>&1; echo $?; }
+check "policy reload refused on the unreadable directory (exit 7)" test "$(ur_reload)" = 7
+check "refused reload refused again (snapshot untouched)" test "$(ur_reload)" = 7
 check "refusal names the path and the host fix" grep -qF "cannot read $UR/sub" "$WORK/ur.err"
 check "refusal says chmod u+rx" grep -qF "chmod u+rx" "$WORK/ur.err"
 check "secrets never printed after the refused start" ur_leak
 chmod u+rx "$UR/sub" "$UR/sub2"
+check "reload after the fix still shows the pattern" grep -qxF "+ ignore extra.txt" <<<"$(pb policy reload "$URNAME" 2>/dev/null)"
 check "start works once the host restores the permissions" test "$(ur_start)" = 0
 check "files still masked after the restart" ur_leak
 pb stop "$URNAME" >/dev/null 2>&1
 rm "$UR/sub2/.env"
 check "start refused on a missing masked path (exit 7)" test "$(ur_start)" = 7
 check "refusal lists the missing path" grep -qxF "  sub2/.env" "$WORK/ur.err"
+check "refused start on a missing path leaves no podbox container" ur_none
 pb policy reload "$URNAME" >/dev/null 2>&1
 check "plain policy reload keeps the record" test "$(ur_start)" = 7
 check "policy reload --forget-missing prints the dropped record" grep -qxF -- "- mask sub2/.env (missing)" <<<"$(pb policy reload "$URNAME" --forget-missing 2>/dev/null)"
 check "start works after --forget-missing" test "$(ur_start)" = 0
 check "remaining file still masked" ur_leak
 pb rm "$URNAME" >/dev/null 2>&1
+
+echo "== hard links of masked files"
+HL=$WORK/links
+mkdir -p "$HL/q"
+echo 'HL_SECRET_1' >"$HL/q/cred.key"
+ln "$HL/q/cred.key" "$HL/q/z.txt" # sorts after the masked file
+ln "$HL/q/cred.key" "$HL/q/a.txt" # sorts before it
+hl_json=$(pb create shell "$HL" --name "$HLNAME" -o json 2>"$WORK/hl.err")
+check "create with hard links of a masked file succeeds" jqe '.action == "created"' <<<"$hl_json"
+blocked "create panics" grep -q panic "$WORK/hl.err"
+hl_start() { pb start "$HLNAME" >/dev/null 2>"$WORK/hl.err"; echo $?; }
+check "start with hard links exits 0" test "$(hl_start)" = 0
+for f in q/cred.key q/z.txt q/a.txt; do
+	blocked "read $f (hard link of a masked file)" sx "$HLNAME" "grep -q HL_SECRET q/${f#q/}"
+done
+check "agent creates a secret and hard links to it" sx "$HLNAME" "echo HL_SECRET_2 >n.key && ln n.key n2 && ln n.key 0first"
+pb stop "$HLNAME" >/dev/null 2>&1
+check "start after the agent's hard links exits 0" test "$(hl_start)" = 0
+blocked "start after the agent's hard links panics" grep -q panic "$WORK/hl.err"
+for f in n.key n2 0first; do
+	blocked "read $f after stop/start" sx "$HLNAME" "grep -q HL_SECRET $f"
+done
+check "secrets intact on the host" grep -q HL_SECRET_2 "$HL/n2"
+pb rm "$HLNAME" >/dev/null 2>&1
 
 echo "== linked worktree git directory"
 WTP=$WORK/wtmain

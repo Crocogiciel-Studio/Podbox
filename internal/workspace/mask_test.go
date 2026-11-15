@@ -157,19 +157,25 @@ func TestMasksFollowRenamedParents(t *testing.T) {
 	if len(fourth.Missing) != 1 || fourth.Missing[0] != "secret/data.txt" || !strings.Contains(maskList(fourth), "config2/prod.yaml") {
 		t.Fatalf("missing %v masks %s", fourth.Missing, maskList(fourth))
 	}
-	if kept, dropped := Shrink(fourth, nil, false); len(kept) != 3 || strings.Join(dropped, " ") != "config/prod.yaml (now config2/prod.yaml)" {
-		t.Fatalf("plain shrink dropped a missing record: kept %+v dropped %v", kept, dropped)
+	// A plain reload keeps the missing record and, without its pattern, the
+	// moved one: it stays masked where it is now.
+	if kept, dropped := Shrink(fourth, nil, false); len(kept) != 4 || len(dropped) != 0 {
+		t.Fatalf("plain shrink: kept %+v dropped %v", kept, dropped)
 	}
 	kept, dropped := Shrink(fourth, nil, true)
-	want := "config/prod.yaml (now config2/prod.yaml) secret/data.txt (missing)"
-	if strings.Join(dropped, " ") != want {
-		t.Fatalf("dropped %q, want %q", strings.Join(dropped, " "), want)
+	if strings.Join(dropped, " ") != "secret/data.txt (missing)" || len(kept) != 3 {
+		t.Fatalf("forget-missing: kept %+v dropped %v", kept, dropped)
 	}
-	if len(kept) != 2 { // .docker/config.json and .ssh/ are forced
-		t.Fatalf("kept %+v", kept)
+	// Once moved back, a record no pattern matches is dropped.
+	if err := os.Rename(filepath.Join(root, "config2/prod.yaml"), filepath.Join(root, "config/prod.yaml")); err != nil {
+		t.Fatal(err)
 	}
-	if kept, _ := Shrink(fourth, ignore, true); len(kept) != 3 { // the rename alone never unmasks
-		t.Fatalf("kept with the patterns %+v", kept)
+	fifth, err := Resolve(root, nil, kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, dropped := Shrink(fifth, nil, false); strings.Join(dropped, " ") != "config/prod.yaml" {
+		t.Fatalf("dropped %v", dropped)
 	}
 }
 

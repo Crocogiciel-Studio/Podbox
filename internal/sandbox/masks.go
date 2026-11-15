@@ -68,29 +68,6 @@ func (s Store) ResolveMasks(m Meta) (workspace.Result, error) {
 	return res, workspace.MissingError(m.Name, res.Missing)
 }
 
-// ReloadMasks re-records the masks after a snapshot refresh, dropping the
-// records no pattern matches any more and, with forgetMissing, the missing
-// ones. It returns the dropped paths and the missing ones it kept.
-func (s Store) ReloadMasks(m Meta, forgetMissing bool) (dropped, missing []string, err error) {
-	ignore, _, err := readSnap(s.ProjectIgnorePath(m.Name))
-	if err != nil {
-		return nil, nil, err
-	}
-	ts, err := s.loadMasks(m.Name)
-	if err != nil {
-		return nil, nil, err
-	}
-	res, err := workspace.Resolve(m.Workspace, ignore, ts)
-	if err != nil {
-		return nil, nil, err
-	}
-	kept, dropped := workspace.Shrink(res, ignore, forgetMissing)
-	if !forgetMissing {
-		missing = res.Missing
-	}
-	return dropped, missing, s.saveMasks(m.Name, kept)
-}
-
 // MaskWarning is the loud advice printed when recorded masked paths moved;
 // "" when none did. Missing ones refuse the start instead (MissingError).
 func MaskWarning(m Meta, res workspace.Result) string {
