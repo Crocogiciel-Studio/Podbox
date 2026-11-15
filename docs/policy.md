@@ -62,9 +62,11 @@ Common to every agent: `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org
 
 | Agent | Extra hosts |
 | --- | --- |
-| claude | `api.anthropic.com`, `*.anthropic.com`, `claude.ai`, `*.claude.ai`, `claude.com`, `*.claude.com`, `statsig.anthropic.com`, `sentry.io` |
+| claude | `api.anthropic.com`, `*.anthropic.com`, `claude.ai`, `*.claude.ai`, `claude.com`, `*.claude.com`, `statsig.anthropic.com` |
 | kiro (unverified) | `kiro.dev`, `*.kiro.dev`, `q.us-east-1.amazonaws.com`, `codewhisperer.us-east-1.amazonaws.com`, `oidc.us-east-1.amazonaws.com`, `*.awsapps.com` |
 | shell | none |
+
+`sentry.io` is not a default: any Sentry project accepts events, so it would be an open upload channel; Claude Code's error reports simply fail. Which defaults can still carry data out, and how to narrow them: [known egress channels](security-model.md#known-egress-channels).
 
 Observed Claude Code 2.1.325 startup traffic: `api.anthropic.com`, `platform.claude.com`, `raw.githubusercontent.com`. The login flow itself has not been observed.
 

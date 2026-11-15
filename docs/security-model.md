@@ -72,6 +72,27 @@ The live `.git` is compared with the fingerprint after `run`, `attach` and `exec
 
 The check runs when podbox does: a git command you run on the host before any podbox command is not protected. For untrusted work, prefer the upcoming `--clone` mode, which keeps the agent away from the host repository's git directory.
 
+## Known egress channels
+
+Every allowlisted host can receive what the agent sends it. Among the defaults:
+
+- `github.com`: `git push` and the web endpoints accept data for any account or token the agent holds (a token it finds in the project, or one it is given).
+- `*.githubusercontent.com`: mostly downloads, but it is a wildcard over user-controlled content hosts.
+- Package registries (`registry.npmjs.org`): `npm publish` with any token the agent holds uploads a package anyone can read. PyPI uploads go to `upload.pypi.org`, which is not allowed.
+- The agent's own API hosts (`*.anthropic.com`, `*.claude.ai`, `*.claude.com`, the Kiro hosts): they carry the conversation by design.
+
+To narrow them, deny what the task does not need. A deny wins over every allow in any layer, so a global deny in `~/.config/podbox/policy.yaml` applies to all sandboxes:
+
+```yaml
+rules:
+  - host: github.com
+    allow: false
+  - host: "*.githubusercontent.com"
+    allow: false
+```
+
+For one project, put the same rules in `.podbox/policy.yaml`, or run `podbox policy deny <sandbox> <host>` for the current sandbox only.
+
 ## What it does not protect against
 
 - Kernel or runtime exploits: containers share the host kernel.

@@ -10,6 +10,8 @@ var commonHosts = []string{
 }
 
 var agentHosts = map[string][]string{
+	// No sentry.io: any Sentry DSN accepts data, and failed error
+	// reports are harmless.
 	"claude": {
 		"api.anthropic.com",
 		"*.anthropic.com",
@@ -18,7 +20,6 @@ var agentHosts = map[string][]string{
 		"claude.com",
 		"*.claude.com",
 		"statsig.anthropic.com",
-		"sentry.io",
 	},
 	// cognito-identity and client-telemetry observed from kiro-cli 3.3.0;
 	// the login (OIDC/SSO) hosts come from Kiro docs and are not yet observed.
