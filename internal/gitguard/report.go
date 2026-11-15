@@ -70,6 +70,6 @@ func Notice(name, ws string) string {
 	if len(src) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%s: this project runs code from %s on your commits; the agent can modify it: review the diff before committing on the host; for untrusted code use --clone (coming soon)",
+	return fmt.Sprintf("%s: this project runs code from %s on your commits; the agent can modify it: review the diff before committing on the host; for untrusted code create the sandbox with --clone",
 		name, strings.Join(src, ", "))
 }

@@ -47,7 +47,7 @@ func TestHookFilesInIntegrity(t *testing.T) {
 		t.Fatalf("notice without hooks: %s", n)
 	}
 	write(t, filepath.Join(ws, ".husky", "pre-commit"), "npm test\n")
-	if n := gitguard.Notice(m.Name, m.Workspace); !strings.Contains(n, "runs code from .husky/ on your commits") || !strings.Contains(n, "--clone") {
+	if n := gitguard.Notice(m.Name, m.Workspace); !strings.Contains(n, "runs code from .husky/ on your commits") || !strings.Contains(n, "--clone") || strings.Contains(n, "coming soon") {
 		t.Fatalf("notice: %s", n)
 	}
 	st := Store{Root: t.TempDir()}
