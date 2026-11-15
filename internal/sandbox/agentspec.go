@@ -24,6 +24,9 @@ const AgentUser = "1000:1000"
 // policyMount is where the proxy reads the sandbox state directory.
 const policyMount = "/etc/podbox"
 
+// agentMount is where the agent reads its policy view.
+const agentMount = "/run/podbox"
+
 func agentContainer(name string) string { return "podbox-" + name + "-agent" }
 func proxyContainer(name string) string { return "podbox-" + name + "-proxy" }
 
@@ -71,6 +74,7 @@ type agentInput struct {
 	GitDir   bool     // .git is a directory: bind it on itself so it cannot be renamed
 	Masks    []workspace.Mask
 	EmptyDir string
+	AgentDir string // the agent's read-only view of podbox state
 	Limits   *runtime.Limits
 	SELinux  bool
 	GOOS     string
@@ -86,6 +90,7 @@ func agentSpec(in agentInput) runtime.ContainerSpec {
 		{Type: runtime.Bind, Source: m.Workspace, Target: target, Relabel: in.SELinux},
 		{Type: runtime.Volume, Source: HomeVolume(m.Agent), Target: "/home/agent"},
 		{Type: runtime.Tmpfs, Target: "/tmp", Options: "rw,nosuid,nodev,size=1g"},
+		{Type: runtime.Bind, Source: in.AgentDir, Target: agentMount, ReadOnly: true, Relabel: in.SELinux},
 	}
 	if in.GitDir {
 		mounts = append(mounts, runtime.Mount{Type: runtime.Bind, Source: filepath.Join(m.Workspace, ".git"), Target: path.Join(target, ".git"), Relabel: in.SELinux})

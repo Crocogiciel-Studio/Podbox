@@ -220,7 +220,7 @@ func (s Store) Reload(m Meta, forgetMissing bool) (Changes, policy.Effective, er
 	if err := s.saveMasks(m.Name, kept); err != nil {
 		return c, e, err
 	}
-	return c, e, policy.WriteEffective(s.EffectivePath(m.Name), e)
+	return c, e, s.writeEffective(m, e)
 }
 
 // compileWith compiles the policy with the given project rules in place of

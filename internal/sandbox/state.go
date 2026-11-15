@@ -66,6 +66,17 @@ func (s Store) SessionPath(name string) string   { return filepath.Join(s.Dir(na
 func (s Store) EffectivePath(name string) string { return filepath.Join(s.Dir(name), EffectiveFile) }
 func (s Store) EmptyDir(name string) string      { return filepath.Join(s.Dir(name), "masks", "empty") }
 
+// AgentDir is the only state directory the agent sees, read-only.
+func (s Store) AgentDir(name string) string { return filepath.Join(s.Dir(name), "agent") }
+
+// AgentPolicyPath is the agent's view of the effective policy.
+func (s Store) AgentPolicyPath(name string) string {
+	return filepath.Join(s.AgentDir(name), AgentPolicyFile)
+}
+
+// AgentPolicyFile is the agent view file name inside AgentDir.
+const AgentPolicyFile = "policy.json"
+
 // EffectiveFile is the effective policy file name inside the sandbox dir.
 const EffectiveFile = "policy.effective.json"
 
@@ -113,5 +124,18 @@ func (s Store) Sources(m Meta) policy.Sources {
 // RefreshPolicy recompiles and atomically rewrites the effective policy.
 func (s Store) RefreshPolicy(m Meta) (policy.Effective, error) {
 	e := policy.Compile(s.Sources(m))
-	return e, policy.WriteEffective(s.EffectivePath(m.Name), e)
+	return e, s.writeEffective(m, e)
+}
+
+// writeEffective writes the effective policy the proxy enforces and the
+// view of it the agent reads, each atomically.
+func (s Store) writeEffective(m Meta, e policy.Effective) error {
+	if err := policy.WriteEffective(s.EffectivePath(m.Name), e); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(e.AgentView(m.Workspace), "", "  ")
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(s.AgentPolicyPath(m.Name), append(b, '\n'))
 }

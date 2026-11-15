@@ -1,6 +1,6 @@
 ---
 objective: "An agent in a podbox sandbox (claude, kiro) is told at every start that it is sandboxed and what to ask the human when a request is refused, and can read its live effective policy, with nothing written in the project."
-status: pending
+status: in-progress
 ---
 
 # Plan: Agent context

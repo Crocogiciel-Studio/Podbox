@@ -16,8 +16,9 @@ func TestAgentSpecHardening(t *testing.T) {
 	m := Meta{Name: "t1", Agent: "claude", Workspace: "/home/u/proj"}
 	s := agentSpec(agentInput{
 		Meta: m, Image: "img", ProxyIP: "10.89.0.2", EmptyDir: "/state/t1/masks/empty", GOOS: "linux",
-		Masks:  []workspace.Mask{{Rel: ".env"}, {Rel: ".ssh", Dir: true}},
-		Limits: &runtime.Limits{CPUs: "4", Memory: "8g", PIDs: 2048},
+		AgentDir: "/state/t1/agent",
+		Masks:    []workspace.Mask{{Rel: ".env"}, {Rel: ".ssh", Dir: true}},
+		Limits:   &runtime.Limits{CPUs: "4", Memory: "8g", PIDs: 2048},
 	})
 	argv := strings.Join(runtime.CreateArgs(s), " ")
 	for _, want := range []string{
@@ -27,13 +28,13 @@ func TestAgentSpecHardening(t *testing.T) {
 		"--volume /home/u/proj:/home/u/proj ", "--volume podbox-home-claude:/home/agent ",
 		"--volume /dev/null:/home/u/proj/.env:ro", "--volume /state/t1/masks/empty:/home/u/proj/.ssh:ro",
 		"--env HTTPS_PROXY=http://proxy:3128", "--env NO_PROXY=localhost,127.0.0.1", "--cpus 4", "--pids-limit 2048",
-		"--workdir /home/u/proj",
+		"--workdir /home/u/proj", "--volume /state/t1/agent:/run/podbox:ro",
 	} {
 		if !strings.Contains(argv, want) {
 			t.Errorf("missing %q in\n%s", want, argv)
 		}
 	}
-	for _, bad := range []string{"--privileged", "podman.sock", "docker.sock", EgressNetwork} {
+	for _, bad := range []string{"--privileged", "podman.sock", "docker.sock", EgressNetwork, ":/etc/podbox", "--volume /state/t1:"} {
 		if strings.Contains(argv, bad) {
 			t.Errorf("agent argv contains %q", bad)
 		}

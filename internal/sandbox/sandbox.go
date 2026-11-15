@@ -223,8 +223,11 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 	if err := os.MkdirAll(m.Store.EmptyDir(meta.Name), 0o755); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(m.Store.AgentDir(meta.Name), 0o755); err != nil {
+		return err
+	}
 	spec := agentSpec(agentInput{
-		Meta: meta, Image: ref, ProxyIP: ip, ReadOnly: readOnlyProject(ws), GitDir: gitguard.HasDir(ws), Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name),
+		Meta: meta, Image: ref, ProxyIP: ip, ReadOnly: readOnlyProject(ws), GitDir: gitguard.HasDir(ws), Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name), AgentDir: m.Store.AgentDir(meta.Name),
 		Limits: limits, SELinux: m.Info.SELinux, GOOS: m.GOOS,
 	})
 	if err := checkMounts(ws, meta.Workspace, spec.Mounts); err != nil {
