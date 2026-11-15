@@ -361,28 +361,18 @@ func (m *Manager) List(ctx context.Context) ([]Status, error) {
 		return s
 	}
 	for _, c := range cs {
-		s := get(c.Labels[LabelSandbox])
-		s.Agent, s.Workspace = c.Labels[LabelAgent], c.Labels[LabelWorkspace]
-		switch c.Labels[LabelRole] {
-		case "agent":
-			s.State, s.Image = c.State, c.Image
-		case "proxy":
-			s.Proxy = c.State
-		}
+		get(c.Labels[LabelSandbox]).addContainer(c)
 	}
 	entries, _ := os.ReadDir(m.Store.Root)
 	for _, e := range entries {
 		if meta, err := m.Store.Load(e.Name()); err == nil {
 			s := get(meta.Name)
-			s.StateDir = true
+			s.addMeta(meta)
 			s.ProjectChanged = m.Store.Drift(meta)
 			if g, err := m.Store.CheckGit(meta); err != nil {
 				m.Warn("%s: git integrity check failed: %v", meta.Name, err)
 			} else {
 				s.GitIntegrity = g
-			}
-			if s.Agent == "" {
-				s.Agent, s.Workspace = meta.Agent, meta.Workspace
 			}
 		}
 	}
@@ -394,17 +384,47 @@ func (m *Manager) List(ctx context.Context) ([]Status, error) {
 	return out, nil
 }
 
+// status reports one sandbox from its labelled containers and its state
+// directory, without the drift and git checks of List; ErrNotFound when
+// neither exists.
 func (m *Manager) status(ctx context.Context, name string) (Status, error) {
-	all, err := m.List(ctx)
+	cs, err := m.RT.ContainerList(ctx, LabelSandbox+"="+name)
 	if err != nil {
 		return Status{}, err
 	}
-	for _, s := range all {
-		if s.Name == name {
-			return s, nil
+	s := Status{Name: name, State: "missing", Proxy: "missing"}
+	found := false
+	for _, c := range cs {
+		if c.Labels[LabelSandbox] == name {
+			s.addContainer(c)
+			found = true
 		}
 	}
-	return Status{}, ErrNotFound
+	if meta, err := m.Store.Load(name); err == nil {
+		s.addMeta(meta)
+		found = true
+	}
+	if !found {
+		return Status{}, ErrNotFound
+	}
+	return s, nil
+}
+
+func (s *Status) addContainer(c runtime.Container) {
+	s.Agent, s.Workspace = c.Labels[LabelAgent], c.Labels[LabelWorkspace]
+	switch c.Labels[LabelRole] {
+	case "agent":
+		s.State, s.Image = c.State, c.Image
+	case "proxy":
+		s.Proxy = c.State
+	}
+}
+
+func (s *Status) addMeta(meta Meta) {
+	s.StateDir = true
+	if s.Agent == "" {
+		s.Agent, s.Workspace = meta.Agent, meta.Workspace
+	}
 }
 
 // IO is the terminal wiring of an interactive command.

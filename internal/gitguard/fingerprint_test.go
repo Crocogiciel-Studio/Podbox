@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -273,4 +274,27 @@ func tree(t *testing.T, files map[string]string) string {
 		writeFile(t, filepath.Join(root, filepath.FromSlash(p)), body)
 	}
 	return root
+}
+
+// TestObjectStoreNotWalked: the fingerprint skips loose objects and packs
+// but still watches objects/info and the git directory of a submodule whose
+// name has an objects segment.
+func TestObjectStoreNotWalked(t *testing.T) {
+	ws := repo(t)
+	g := filepath.Join(ws, ".git")
+	writeFile(t, filepath.Join(g, "modules/objects/x/HEAD"), "ref: refs/heads/main\n")
+	writeFile(t, filepath.Join(g, "modules/objects/x/config"), "[core]\n")
+	before := printOf(t, ws)
+	if err := os.Symlink("/etc/passwd", filepath.Join(g, "objects/pack/planted")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(g, "objects/info/alternates"), "/tmp/x\n")
+	writeFile(t, filepath.Join(g, "modules/objects/x/config"), "[core]\n\tfsmonitor = x\n")
+	var got []string
+	for _, f := range Diff(before, printOf(t, ws)) {
+		got = append(got, f.Path)
+	}
+	if want := []string{".git/modules/objects/x/config", ".git/objects/info/alternates"}; !slices.Equal(got, want) {
+		t.Fatalf("findings %v, want %v", got, want)
+	}
 }

@@ -353,32 +353,42 @@ func (e *missingError) Unwrap() error { return ErrMasks }
 // Shrink drops, on an explicit policy reload only, the records still at
 // their recorded path that no pattern matches any more and, with
 // forgetMissing, the missing ones. A record found at another path (a
-// renamed parent) is never dropped: it stays masked where it is now. A hard
-// link of a kept record is kept too. It returns the kept records and a
-// description of each dropped one.
-func Shrink(res Result, ignore []byte, forgetMissing bool) (kept []Tracked, dropped []string) {
+// renamed parent) is never dropped: it stays masked where it is now. Nor is
+// a record the next resolution of root masks anyway, such as a hard link of
+// a kept record or of a file inside a masked directory: dropped lists only
+// what stops being masked. It returns the kept records and a description of
+// each dropped one.
+func Shrink(root string, res Result, ignore []byte, forgetMissing bool) (kept []Tracked, dropped []string, err error) {
 	masked := Matcher(ignore)
-	keep := func(t Tracked) bool {
-		if t.Now == "" {
-			return !forgetMissing
-		}
-		return t.Now != t.Rel || masked(t.Rel, t.Dir)
-	}
-	ids := map[fileKey]bool{}
-	for _, t := range res.Tracked {
-		if t.Ino != 0 && t.Now != "" && keep(t) {
-			ids[fileKey{t.Dev, t.Ino}] = true
-		}
-	}
+	var gone []Tracked
 	for _, t := range res.Tracked {
 		switch {
-		case keep(t) || t.Now != "" && t.Ino != 0 && ids[fileKey{t.Dev, t.Ino}]:
+		case t.Now == "" && !forgetMissing, t.Now != "" && (t.Now != t.Rel || masked(t.Rel, t.Dir)):
 			kept = append(kept, t)
+		default:
+			gone = append(gone, t)
+		}
+	}
+	if len(gone) == 0 {
+		return kept, nil, nil
+	}
+	// The masks without the dropped records; it re-records what they still cover.
+	again, err := Resolve(root, ignore, kept)
+	if err != nil {
+		return nil, nil, err
+	}
+	still, dirs := map[string]bool{}, map[string]bool{}
+	for _, m := range again.Masks {
+		still[m.Rel] = true
+		dirs[m.Rel] = m.Dir
+	}
+	for _, t := range gone {
+		switch {
 		case t.Now == "":
 			dropped = append(dropped, t.Rel+" (missing)")
-		default:
+		case !still[t.Now] && !covered(t.Now, dirs):
 			dropped = append(dropped, t.Rel)
 		}
 	}
-	return kept, dropped
+	return again.Tracked, dropped, nil
 }

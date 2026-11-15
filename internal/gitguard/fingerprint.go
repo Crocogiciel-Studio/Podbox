@@ -99,6 +99,21 @@ func isGitDir(r *os.Root, rel string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
+// skipWalk reports a directory of pure churn the fingerprint never reads,
+// rel being relative to .git (opened as g): git-lfs objects, and the object
+// store of .git or of a submodule git directory (loose objects and packs;
+// objects/info is watched).
+func skipWalk(g *os.Root, rel string) bool {
+	if rel == "lfs" {
+		return true
+	}
+	store := path.Dir(rel)
+	if path.Base(rel) == "info" || path.Base(store) != "objects" {
+		return false
+	}
+	return store == "objects" || strings.HasPrefix(store, "modules/") && isGitDir(g, path.Dir(store))
+}
+
 // isChurnEntry reports an entry git creates and removes itself: a
 // top-level name, or a worktree entry path (see Print.Entries).
 func isChurnEntry(e string) bool {
@@ -225,6 +240,9 @@ func fingerprintGitDir(r *os.Root) (Print, error) {
 	err = fs.WalkDir(gfs, ".", func(rel string, d fs.DirEntry, err error) error {
 		if err != nil || rel == "." {
 			return nil // unreadable entries are unreadable to host git too
+		}
+		if d.IsDir() && skipWalk(g, rel) {
+			return fs.SkipDir
 		}
 		if d.IsDir() && worktreeDir(g, rel) {
 			if es, err := fs.ReadDir(gfs, rel); err == nil {

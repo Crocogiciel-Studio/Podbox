@@ -57,6 +57,32 @@ func TestHardLinksMaskedInAnyOrder(t *testing.T) {
 	}
 }
 
+// TestShrinkKeepsStillMaskedLinks: policy reload never lists as dropped a
+// record that the next start masks anyway: a hard link of a file inside a
+// masked directory, or of a file whose pattern still matches.
+func TestShrinkKeepsStillMaskedLinks(t *testing.T) {
+	root := tree(t, map[string]string{".ssh/id_x": "S", "cfg/prod.yaml": "P", "plain.txt": "p"})
+	link(t, root, ".ssh/id_x", "q/z.txt")
+	link(t, root, "cfg/prod.yaml", "q/p.txt")
+	ignore := []byte("/cfg/prod.yaml\nplain.txt\n")
+	res, err := Resolve(root, ignore, nil)
+	if err != nil || maskList(res) != ".ssh/ cfg/prod.yaml plain.txt q/p.txt q/z.txt" {
+		t.Fatalf("%s %v", maskList(res), err)
+	}
+	kept, dropped, err := Shrink(root, res, ignore, false)
+	if err != nil || len(dropped) != 0 || len(kept) != len(res.Tracked) {
+		t.Fatalf("same patterns: kept %+v dropped %v %v", kept, dropped, err)
+	}
+	kept, dropped, err = Shrink(root, res, []byte("/cfg/prod.yaml\n"), false)
+	if err != nil || strings.Join(dropped, " ") != "plain.txt" {
+		t.Fatalf("plain.txt pattern removed: dropped %v %v", dropped, err)
+	}
+	again, err := Resolve(root, []byte("/cfg/prod.yaml\n"), kept)
+	if err != nil || maskList(again) != ".ssh/ cfg/prod.yaml q/p.txt q/z.txt" {
+		t.Fatalf("after reload: %s %v", maskList(again), err)
+	}
+}
+
 // TestLinkIntoMaskedDirectory: a link outside a masked directory to a file
 // inside it is masked.
 func TestLinkIntoMaskedDirectory(t *testing.T) {
@@ -76,8 +102,9 @@ func TestSpecialFileAtRecordedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	keep := t.TempDir() // moved out, not removed: a freed inode reused below would read as a move
 	for _, f := range []string{"prod.yaml", "other.yaml"} {
-		if err := os.Remove(filepath.Join(root, "cfg", f)); err != nil {
+		if err := os.Rename(filepath.Join(root, "cfg", f), filepath.Join(keep, f)); err != nil {
 			t.Fatal(err)
 		}
 	}

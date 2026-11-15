@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,5 +120,31 @@ func TestListFromLabelsWithStaleState(t *testing.T) {
 	}
 	if o := got[1]; o.Name != "orphan" || o.State != "missing" || !o.StateDir || o.Workspace != "/w2" {
 		t.Fatalf("orphan: %+v", o)
+	}
+}
+
+// TestStatusChecksOnlyItsSandbox: stop and rm look one sandbox up, without
+// the drift and git checks List runs on every sandbox.
+func TestStatusChecksOnlyItsSandbox(t *testing.T) {
+	st := Store{Root: t.TempDir()}
+	for _, n := range []string{"target", "other"} {
+		if err := st.Save(Meta{Name: n, Agent: "shell", Workspace: t.TempDir()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, st.gitPrintPath("other"), "not json") // List warns about it
+	warned := false
+	m := &Manager{Store: st, Warn: func(string, ...any) { warned = true }, RT: listRT{cs: []runtime.Container{
+		{Name: "podbox-other-agent", State: "running", Labels: map[string]string{LabelSandbox: "other", LabelRole: "agent", LabelAgent: "claude"}},
+	}}}
+	s, err := m.status(context.Background(), "target")
+	if err != nil || s.Agent != "shell" || s.State != "missing" || !s.StateDir || warned {
+		t.Fatalf("%+v %v warned=%v", s, err, warned)
+	}
+	if _, err := m.status(context.Background(), "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown: %v", err)
+	}
+	if _, err := m.List(context.Background()); err != nil || !warned {
+		t.Fatalf("List should check every sandbox: %v warned=%v", err, warned)
 	}
 }

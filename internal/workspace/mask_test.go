@@ -159,12 +159,12 @@ func TestMasksFollowRenamedParents(t *testing.T) {
 	}
 	// A plain reload keeps the missing record and, without its pattern, the
 	// moved one: it stays masked where it is now.
-	if kept, dropped := Shrink(fourth, nil, false); len(kept) != 4 || len(dropped) != 0 {
-		t.Fatalf("plain shrink: kept %+v dropped %v", kept, dropped)
+	if kept, dropped, err := Shrink(root, fourth, nil, false); err != nil || len(kept) != 4 || len(dropped) != 0 {
+		t.Fatalf("plain shrink: kept %+v dropped %v %v", kept, dropped, err)
 	}
-	kept, dropped := Shrink(fourth, nil, true)
-	if strings.Join(dropped, " ") != "secret/data.txt (missing)" || len(kept) != 3 {
-		t.Fatalf("forget-missing: kept %+v dropped %v", kept, dropped)
+	kept, dropped, err := Shrink(root, fourth, nil, true)
+	if err != nil || strings.Join(dropped, " ") != "secret/data.txt (missing)" || len(kept) != 3 {
+		t.Fatalf("forget-missing: kept %+v dropped %v %v", kept, dropped, err)
 	}
 	// Once moved back, a record no pattern matches is dropped.
 	if err := os.Rename(filepath.Join(root, "config2/prod.yaml"), filepath.Join(root, "config/prod.yaml")); err != nil {
@@ -174,8 +174,8 @@ func TestMasksFollowRenamedParents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, dropped := Shrink(fifth, nil, false); strings.Join(dropped, " ") != "config/prod.yaml" {
-		t.Fatalf("dropped %v", dropped)
+	if _, dropped, err := Shrink(root, fifth, nil, false); err != nil || strings.Join(dropped, " ") != "config/prod.yaml" {
+		t.Fatalf("dropped %v %v", dropped, err)
 	}
 }
 

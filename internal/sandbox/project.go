@@ -202,7 +202,10 @@ func (s Store) Reload(m Meta, forgetMissing bool) (Changes, policy.Effective, er
 	if err != nil {
 		return c, policy.Effective{}, err
 	}
-	kept, dropped := workspace.Shrink(res, ignore, forgetMissing)
+	kept, dropped, err := workspace.Shrink(m.Workspace, res, ignore, forgetMissing)
+	if err != nil {
+		return c, policy.Effective{}, err
+	}
 	c.MasksDropped = dropped
 	if !forgetMissing {
 		c.MasksMissing = res.Missing
