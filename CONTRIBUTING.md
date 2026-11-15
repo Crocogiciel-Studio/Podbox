@@ -14,6 +14,7 @@ make e2e         # Linux with rootless Podman: evasion and lifecycle suites
 
 - Go standard library first; dependencies are limited to cobra, yaml.v3 and a gitignore matcher.
 - Podman is driven through its CLI behind `internal/runtime.Runtime`; callers never build podman flags.
+- Every protection of the workspace's git directory and hook files (read-only binds, fingerprint, diff, advice) lives in `internal/gitguard`; podbox's own state files are written through `internal/fsutil.WriteAtomic`.
 - Every command supports `--output json` and returns a documented exit code (see README).
 - Commits follow Conventional Commits.
 - Licensed under Apache-2.0; contributions are accepted under the same license.

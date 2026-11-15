@@ -1,4 +1,4 @@
-package workspace
+package gitguard
 
 import (
 	"bufio"
@@ -9,6 +9,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
 // Hook managers read their hooks from worktree files, which the agent can
@@ -23,7 +25,7 @@ var hookFiles = []string{".githooks/", ".husky/", ".lefthook.yml", ".pre-commit-
 const maxHookFiles = 1000
 
 // maxHookFile caps the bytes hashed of one hook file; a larger one is
-// recorded as Oversized and always reported.
+// recorded as workspace.Oversized and always reported.
 const maxHookFile = 16 << 20
 
 // HookSources lists the existing worktree paths that define git hooks
@@ -37,7 +39,7 @@ func HookSources(ws string) []string {
 	defer r.Close()
 	var out []string
 	for _, rel := range hookCandidates(r, ws) {
-		if _, err := Lstat(r, strings.TrimSuffix(rel, "/")); err != nil {
+		if _, err := workspace.Lstat(r, strings.TrimSuffix(rel, "/")); err != nil {
 			continue
 		}
 		covered := false
@@ -64,7 +66,7 @@ func hookCandidates(r *os.Root, ws string) []string {
 // hooksPath returns core.hooksPath from .git/config as a slash-separated
 // workspace-relative path, or "" when unset, outside the workspace or in .git.
 func hooksPath(r *os.Root, ws string) string {
-	b, err := ReadFile(r, ".git/config", maxGitFile)
+	b, err := workspace.ReadFile(r, ".git/config", maxGitFile)
 	if err != nil {
 		return "" // an oversized config is reported by the git fingerprint
 	}
@@ -109,26 +111,26 @@ func fingerprintHooks(r *os.Root) (map[string]string, int) {
 	n := 0
 	for _, src := range hookCandidates(r, r.Name()) {
 		src = strings.TrimSuffix(src, "/")
-		fi, err := Lstat(r, src)
+		fi, err := workspace.Lstat(r, src)
 		switch {
 		case err != nil:
 			continue
 		case fi.Mode()&fs.ModeSymlink != 0:
 			n++
-			if t, err := Readlink(r, src); err == nil {
+			if t, err := workspace.Readlink(r, src); err == nil {
 				out[src] = "link:" + t
 			}
 			continue
 		case fi.Mode().IsRegular():
 			n++
-			if sum, err := HashFile(r, src, maxHookFile); err == nil {
+			if sum, err := workspace.HashFile(r, src, maxHookFile); err == nil {
 				out[src] = sum
 			}
 			continue
 		case !fi.IsDir():
 			continue
 		}
-		d, err := OpenDir(r, src)
+		d, err := workspace.OpenDir(r, src)
 		if err != nil {
 			continue
 		}
@@ -146,7 +148,7 @@ func fingerprintHooks(r *os.Root) (map[string]string, int) {
 					out[rel] = "link:" + t
 				}
 			case e.Type().IsRegular():
-				if sum, err := HashFile(d, p, maxHookFile); err == nil {
+				if sum, err := workspace.HashFile(d, p, maxHookFile); err == nil {
 					out[rel] = sum
 				}
 			}
@@ -159,24 +161,24 @@ func fingerprintHooks(r *os.Root) (map[string]string, int) {
 
 // diffHooks lists hook files changed, added or removed, as findings; one
 // finding when there are too many to verify.
-func diffHooks(oldPrint, curPrint GitPrint) []GitFinding {
+func diffHooks(oldPrint, curPrint Print) []Finding {
 	const why = ": git runs it on your commits; review the diff before committing on the host"
 	if n := max(oldPrint.HookFiles, curPrint.HookFiles); n > maxHookFiles {
 		// No path: the files are under the hook sources listed at start.
-		return []GitFinding{{Reason: fmt.Sprintf("hook files exceed cap (%d > %d), not fully verified", n, maxHookFiles) + why, Hook: true}}
+		return []Finding{{Reason: fmt.Sprintf("hook files exceed cap (%d > %d), not fully verified", n, maxHookFiles) + why, Hook: true}}
 	}
 	old, cur := oldPrint.Hooks, curPrint.Hooks
-	var out []GitFinding
+	var out []Finding
 	for rel, sum := range cur {
-		if sum == Oversized {
-			out = append(out, GitFinding{Path: rel, Reason: oversized + why, Hook: true})
+		if sum == workspace.Oversized {
+			out = append(out, Finding{Path: rel, Reason: oversized + why, Hook: true})
 		} else if prev, ok := old[rel]; !ok || prev != sum {
-			out = append(out, GitFinding{Path: rel, Reason: changeVerb(ok) + why, Hook: true})
+			out = append(out, Finding{Path: rel, Reason: changeVerb(ok) + why, Hook: true})
 		}
 	}
 	for rel := range old {
 		if _, ok := cur[rel]; !ok {
-			out = append(out, GitFinding{Path: rel, Reason: "removed" + why, Hook: true})
+			out = append(out, Finding{Path: rel, Reason: "removed" + why, Hook: true})
 		}
 	}
 	return out

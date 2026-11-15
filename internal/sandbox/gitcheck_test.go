@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Crocogiciel-Studio/podbox/internal/gitguard"
 )
 
 func TestCheckGitAgainstRecord(t *testing.T) {
@@ -27,7 +29,7 @@ func TestCheckGitAgainstRecord(t *testing.T) {
 	if err != nil || g.OK || len(g.Findings) != 1 {
 		t.Fatalf("commondir: want one finding, got %+v %v", g, err)
 	}
-	if w := GitWarning(m.Workspace, *g, m.Name); !strings.Contains(w, ".git/commondir") || !strings.Contains(w, "podbox git-check s --accept") {
+	if w := gitguard.Warning(m.Workspace, *g, m.Name); !strings.Contains(w, ".git/commondir") || !strings.Contains(w, "podbox git-check s --accept") {
 		t.Fatalf("warning lacks path or fix: %s", w)
 	}
 	if err := st.RecordGit(m); err != nil {
@@ -41,11 +43,11 @@ func TestCheckGitAgainstRecord(t *testing.T) {
 func TestHookFilesInIntegrity(t *testing.T) {
 	ws := t.TempDir()
 	m := Meta{Name: "s", Workspace: ws}
-	if n := HookNotice(m); n != "" {
+	if n := gitguard.Notice(m.Name, m.Workspace); n != "" {
 		t.Fatalf("notice without hooks: %s", n)
 	}
 	write(t, filepath.Join(ws, ".husky", "pre-commit"), "npm test\n")
-	if n := HookNotice(m); !strings.Contains(n, "runs code from .husky/ on your commits") || !strings.Contains(n, "--clone") {
+	if n := gitguard.Notice(m.Name, m.Workspace); !strings.Contains(n, "runs code from .husky/ on your commits") || !strings.Contains(n, "--clone") {
 		t.Fatalf("notice: %s", n)
 	}
 	st := Store{Root: t.TempDir()}
@@ -57,7 +59,7 @@ func TestHookFilesInIntegrity(t *testing.T) {
 	if err != nil || g.OK || len(g.Findings) != 1 || g.Findings[0].Path != ".husky/pre-commit" {
 		t.Fatalf("want a finding on .husky/pre-commit, got %+v %v", g, err)
 	}
-	w := GitWarning(m.Workspace, *g, m.Name)
+	w := gitguard.Warning(m.Workspace, *g, m.Name)
 	if !strings.Contains(w, "GIT HOOK FILES CHANGED") || strings.Contains(w, "TAMPERING") || !strings.Contains(w, "podbox git-check s --accept") {
 		t.Fatalf("warning: %s", w)
 	}

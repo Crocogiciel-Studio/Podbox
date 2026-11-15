@@ -1,4 +1,4 @@
-package workspace
+package gitguard
 
 import (
 	"os"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
 func git(t *testing.T, dir string, args ...string) {
@@ -42,9 +44,9 @@ func writeFile(t *testing.T, p, body string) {
 	}
 }
 
-func printOf(t *testing.T, ws string) GitPrint {
+func printOf(t *testing.T, ws string) Print {
 	t.Helper()
-	p, err := FingerprintGit(ws)
+	p, err := Fingerprint(ws)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +73,7 @@ func TestGitNormalUsageHasNoFindings(t *testing.T) {
 	git(t, ws, "reset", "-q", "--hard", "HEAD~1")
 	git(t, ws, "worktree", "add", "-q", filepath.Join(t.TempDir(), "wt"), "v1")
 	git(t, ws, "gc", "-q", "--aggressive", "--prune=now")
-	if f := DiffGit(before, printOf(t, ws)); len(f) != 0 {
+	if f := Diff(before, printOf(t, ws)); len(f) != 0 {
 		t.Fatalf("normal git usage produced findings: %+v", f)
 	}
 }
@@ -120,11 +122,11 @@ func TestGitTamperingFound(t *testing.T) {
 			ws := repo(t)
 			before := printOf(t, ws)
 			tc.do(t, filepath.Join(ws, ".git"))
-			f := DiffGit(before, printOf(t, ws))
+			f := Diff(before, printOf(t, ws))
 			if len(f) != 1 || f[0].Path != tc.path || !strings.Contains(f[0].Reason, tc.want) {
 				t.Fatalf("want one finding on %s containing %q, got %+v", tc.path, tc.want, f)
 			}
-			if f := DiffGit(printOf(t, ws), printOf(t, ws)); len(f) != 0 {
+			if f := Diff(printOf(t, ws), printOf(t, ws)); len(f) != 0 {
 				t.Fatalf("re-recorded fingerprint still has findings: %+v", f)
 			}
 		})
@@ -138,7 +140,7 @@ func TestGitDirectoryKind(t *testing.T) {
 		t.Fatalf("kind %s", before.Kind)
 	}
 	writeFile(t, filepath.Join(ws, ".git", "config"), "[core]\n")
-	if f := DiffGit(before, printOf(t, ws)); len(f) != 1 || f[0].Path != ".git" || !strings.Contains(f[0].Reason, "is now a directory") {
+	if f := Diff(before, printOf(t, ws)); len(f) != 1 || f[0].Path != ".git" || !strings.Contains(f[0].Reason, "is now a directory") {
 		t.Fatalf("created .git not found: %+v", f)
 	}
 
@@ -146,7 +148,7 @@ func TestGitDirectoryKind(t *testing.T) {
 	writeFile(t, filepath.Join(ws, ".git"), "gitdir: ../main/.git/worktrees/w\n")
 	before = printOf(t, ws)
 	writeFile(t, filepath.Join(ws, ".git"), "gitdir: /tmp/evil\n")
-	if f := DiffGit(before, printOf(t, ws)); len(f) != 1 || f[0].Path != ".git" {
+	if f := Diff(before, printOf(t, ws)); len(f) != 1 || f[0].Path != ".git" {
 		t.Fatalf("changed .git pointer not found: %+v", f)
 	}
 }
@@ -182,7 +184,7 @@ func TestLinkedWorktreeTampering(t *testing.T) {
 			git(t, ws, "worktree", "add", "-q", filepath.Join(t.TempDir(), "wt"))
 			before := printOf(t, ws)
 			tc.do(t, filepath.Join(ws, ".git", "worktrees", "wt"))
-			f := DiffGit(before, printOf(t, ws))
+			f := Diff(before, printOf(t, ws))
 			if len(f) != 1 || f[0].Path != tc.path || !strings.Contains(f[0].Reason, tc.want) {
 				t.Fatalf("want one finding on %s containing %q, got %+v", tc.path, tc.want, f)
 			}
@@ -202,13 +204,13 @@ func TestLinkedWorktreeChurnAndCreation(t *testing.T) {
 	git(t, wt, "reset", "-q", "--hard", "HEAD~1")
 	git(t, ws, "worktree", "lock", wt)
 	git(t, ws, "worktree", "add", "-q", filepath.Join(ws, "inner")) // a new worktree as git writes it
-	if f := DiffGit(before, printOf(t, ws)); len(f) != 0 {
+	if f := Diff(before, printOf(t, ws)); len(f) != 0 {
 		t.Fatalf("worktree churn produced findings: %+v", f)
 	}
 	// A worktree directory planted with a foreign commondir is reported.
 	writeFile(t, filepath.Join(ws, ".git/worktrees/planted/HEAD"), "ref: refs/heads/main\n")
 	writeFile(t, filepath.Join(ws, ".git/worktrees/planted/commondir"), "/tmp/evil\n")
-	if f := DiffGit(before, printOf(t, ws)); len(f) != 1 || f[0].Path != ".git/worktrees/planted/commondir" {
+	if f := Diff(before, printOf(t, ws)); len(f) != 1 || f[0].Path != ".git/worktrees/planted/commondir" {
 		t.Fatalf("planted worktree not found: %+v", f)
 	}
 }
@@ -221,7 +223,54 @@ func TestSubmoduleWorktreeTampering(t *testing.T) {
 	after := printOf(t, ws)
 	writeFile(t, filepath.Join(g, "worktrees/w/HEAD"), "x\n")
 	writeFile(t, filepath.Join(g, "worktrees/w/commondir"), "../../../../evil\n")
-	if f := DiffGit(after, printOf(t, ws)); len(f) != 1 || f[0].Path != ".git/modules/sub/worktrees/w/commondir" {
+	if f := Diff(after, printOf(t, ws)); len(f) != 1 || f[0].Path != ".git/modules/sub/worktrees/w/commondir" {
 		t.Fatalf("submodule worktree commondir not found: %+v (before %d entries)", f, len(before.Entries))
 	}
+}
+
+func TestOversizedCommondirReported(t *testing.T) {
+	ws := repo(t)
+	before := printOf(t, ws)
+	big := strings.Repeat("../", maxGitFile/3+1)
+	writeFile(t, filepath.Join(ws, ".git", "commondir"), big)
+	after := printOf(t, ws)
+	if after.Files["commondir"] != workspace.Oversized {
+		t.Fatalf("hash %q, want %q", after.Files["commondir"], workspace.Oversized)
+	}
+	f := Diff(before, after)
+	if len(f) != 1 || f[0].Path != ".git/commondir" || !strings.Contains(f[0].Reason, "oversized") {
+		t.Fatalf("findings %+v", f)
+	}
+	// Still reported once accepted: its content was never checked.
+	if f := Diff(after, printOf(t, ws)); len(f) != 1 {
+		t.Fatalf("accepted oversized file not reported: %+v", f)
+	}
+}
+
+func TestFingerprintNeverFollowsSymlinks(t *testing.T) {
+	ws, outside := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(outside, "pre-commit"), "outside\n")
+	writeFile(t, filepath.Join(outside, "config"), "[core]\n")
+	if err := os.Symlink(outside, filepath.Join(ws, ".husky")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(ws, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	p := printOf(t, ws)
+	if p.Kind != "symlink" || len(p.Files) != 0 {
+		t.Fatalf("followed .git: %+v", p)
+	}
+	if len(p.Hooks) != 1 || p.Hooks[".husky"] != "link:"+outside {
+		t.Fatalf("followed .husky: %v", p.Hooks)
+	}
+}
+
+func tree(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for p, body := range files {
+		writeFile(t, filepath.Join(root, filepath.FromSlash(p)), body)
+	}
+	return root
 }

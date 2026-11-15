@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -16,6 +15,16 @@ func openRoot(t *testing.T, ws string) *os.Root {
 	}
 	t.Cleanup(func() { r.Close() })
 	return r
+}
+
+func writeFile(t *testing.T, p, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRootHelpersRefuseSymlinks(t *testing.T) {
@@ -62,41 +71,11 @@ func TestRootHelpersRefuseSymlinks(t *testing.T) {
 	}
 }
 
-func TestOversizedCommondirReported(t *testing.T) {
-	ws := repo(t)
-	before := printOf(t, ws)
-	big := strings.Repeat("../", maxGitFile/3+1)
-	writeFile(t, filepath.Join(ws, ".git", "commondir"), big)
-	after := printOf(t, ws)
-	if after.Files["commondir"] != Oversized {
-		t.Fatalf("hash %q, want %q", after.Files["commondir"], Oversized)
-	}
-	f := DiffGit(before, after)
-	if len(f) != 1 || f[0].Path != ".git/commondir" || !strings.Contains(f[0].Reason, "oversized") {
-		t.Fatalf("findings %+v", f)
-	}
-	// Still reported once accepted: its content was never checked.
-	if f := DiffGit(after, printOf(t, ws)); len(f) != 1 {
-		t.Fatalf("accepted oversized file not reported: %+v", f)
-	}
-}
-
-func TestFingerprintNeverFollowsSymlinks(t *testing.T) {
+func TestMaskWalkNeverFollowsSymlinks(t *testing.T) {
 	ws, outside := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(outside, "pre-commit"), "outside\n")
-	writeFile(t, filepath.Join(outside, "config"), "[core]\n")
 	if err := os.Symlink(outside, filepath.Join(ws, ".husky")); err != nil {
 		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(ws, ".git")); err != nil {
-		t.Fatal(err)
-	}
-	p := printOf(t, ws)
-	if p.Kind != "symlink" || len(p.Files) != 0 {
-		t.Fatalf("followed .git: %+v", p)
-	}
-	if len(p.Hooks) != 1 || p.Hooks[".husky"] != "link:"+outside {
-		t.Fatalf("followed .husky: %v", p.Hooks)
 	}
 	res, err := Resolve(ws, []byte("pre-commit\n"), nil)
 	if err != nil || len(res.Masks) != 0 {

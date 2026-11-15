@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/fsutil"
+	"github.com/Crocogiciel-Studio/podbox/internal/gitguard"
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
@@ -166,7 +167,7 @@ func (s Store) writeProject(files []liveFile) error {
 			}
 			continue
 		}
-		if err := policy.WriteAtomic(f.snap, f.b); err != nil {
+		if err := fsutil.WriteAtomic(f.snap, f.b); err != nil {
 			return err
 		}
 	}
@@ -325,7 +326,8 @@ func diff(a, b []string) (added, removed []string) {
 }
 
 // readOnlyProject lists the existing project paths to mount read-only in the
-// agent; symlinks are skipped so nothing outside the workspace is exposed.
+// agent, then the git ones (see gitguard.ReadOnly); symlinks are skipped so
+// nothing outside the workspace is exposed.
 func readOnlyProject(r *os.Root) []string {
 	var out []string
 	for _, rel := range projectDirs {
@@ -333,64 +335,7 @@ func readOnlyProject(r *os.Root) []string {
 			out = append(out, rel)
 		}
 	}
-	// .git/config can name hooks, fsmonitor or filter commands that the
-	// host's git would run; objects, refs, index and HEAD stay writable.
-	if gitDir(r) {
-		if fi, err := workspace.Lstat(r, gitConfig); err == nil && fi.Mode().IsRegular() {
-			out = append(out, gitConfig)
-		}
-		out = append(out, hookDirs(r)...)
-	}
-	return out
-}
-
-// hookDirs lists the existing hooks directories of .git and of the submodule
-// git directories under .git/modules, so hooks run for the agent's commits
-// but cannot be changed. Absent ones are not created: one the agent creates
-// is reported by the integrity check.
-func hookDirs(r *os.Root) []string {
-	var out []string
-	isDir := func(rel string) bool { fi, err := workspace.Lstat(r, rel); return err == nil && fi.IsDir() }
-	if isDir(".git/hooks") {
-		out = append(out, ".git/hooks")
-	}
-	mods, err := workspace.OpenDir(r, ".git/modules")
-	if err != nil {
-		return out
-	}
-	defer mods.Close()
-	_ = fs.WalkDir(mods.FS(), ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.IsDir() || p == "." {
-			return nil
-		}
-		if fi, err := workspace.Lstat(mods, path.Join(path.Dir(p), "HEAD")); err != nil || !fi.Mode().IsRegular() {
-			return nil // not inside a git directory: a path segment of a submodule name
-		}
-		switch d.Name() { // inside a submodule git directory: only hooks and nested modules matter
-		case "hooks":
-			out = append(out, ".git/modules/"+p)
-			return fs.SkipDir
-		case "modules":
-			return nil
-		}
-		return fs.SkipDir
-	})
-	return out
-}
-
-const gitConfig = ".git/config"
-
-// gitDir reports a real .git directory (not a symlink).
-func gitDir(r *os.Root) bool {
-	fi, err := r.Lstat(".git")
-	return err == nil && fi.IsDir()
-}
-
-// gitPointer reports a .git file (worktree or submodule): its git directory
-// lies outside the workspace and is not protected.
-func gitPointer(r *os.Root) bool {
-	fi, err := r.Lstat(".git")
-	return err == nil && fi.Mode().IsRegular()
+	return append(out, gitguard.ReadOnly(r)...)
 }
 
 // checkMounts re-validates, right before the container is created, every

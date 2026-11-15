@@ -14,6 +14,7 @@ import (
 
 	"github.com/Crocogiciel-Studio/podbox/internal/agents"
 	"github.com/Crocogiciel-Studio/podbox/internal/config"
+	"github.com/Crocogiciel-Studio/podbox/internal/gitguard"
 	"github.com/Crocogiciel-Studio/podbox/internal/images"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
@@ -52,7 +53,7 @@ type Status struct {
 	// ProjectChanged lists project files edited since the last snapshot.
 	ProjectChanged []string `json:"project_changed,omitempty"`
 	// GitIntegrity compares the workspace's .git with its fingerprint.
-	GitIntegrity *GitIntegrity `json:"git_integrity,omitempty"`
+	GitIntegrity *gitguard.Integrity `json:"git_integrity,omitempty"`
 }
 
 // Imported is what Create read from the project files, as policy reload
@@ -201,7 +202,7 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 		return err
 	}
 	defer ws.Close()
-	if gitPointer(ws) {
+	if gitguard.IsPointer(ws) {
 		m.Warn(".git is a file (worktree or submodule): the hooks and config of the git directory it points to are not protected from the agent")
 	}
 	var limits *runtime.Limits
@@ -215,7 +216,7 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 		return err
 	}
 	spec := agentSpec(agentInput{
-		Meta: meta, Image: ref, ProxyIP: ip, ReadOnly: readOnlyProject(ws), GitDir: gitDir(ws), Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name),
+		Meta: meta, Image: ref, ProxyIP: ip, ReadOnly: readOnlyProject(ws), GitDir: gitguard.HasDir(ws), Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name),
 		Limits: limits, SELinux: m.Info.SELinux, GOOS: m.GOOS,
 	})
 	if err := checkMounts(ws, meta.Workspace, spec.Mounts); err != nil {

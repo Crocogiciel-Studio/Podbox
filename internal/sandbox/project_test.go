@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/gitguard"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
@@ -132,10 +133,10 @@ func TestAgentSpecReadOnlyProjectFiles(t *testing.T) {
 func TestGitConfigReadOnly(t *testing.T) {
 	repo := t.TempDir()
 	write(t, filepath.Join(repo, ".git", "config"), "[core]\n")
-	if ro := readOnlyProject(root(t, repo)); !reflect.DeepEqual(ro, []string{".git/config"}) || gitPointer(root(t, repo)) {
-		t.Fatalf("git dir: read-only %v, pointer %v", ro, gitPointer(root(t, repo)))
+	if ro := readOnlyProject(root(t, repo)); !reflect.DeepEqual(ro, []string{".git/config"}) || gitguard.IsPointer(root(t, repo)) {
+		t.Fatalf("git dir: read-only %v, pointer %v", ro, gitguard.IsPointer(root(t, repo)))
 	}
-	if !gitDir(root(t, repo)) {
+	if !gitguard.HasDir(root(t, repo)) {
 		t.Fatal(".git directory not detected")
 	}
 	s := agentSpec(agentInput{Meta: Meta{Name: "t", Agent: "shell", Workspace: "/p"}, GOOS: "linux", ReadOnly: []string{".git/config"}, GitDir: true})
@@ -148,15 +149,15 @@ func TestGitConfigReadOnly(t *testing.T) {
 
 	worktree := t.TempDir()
 	write(t, filepath.Join(worktree, ".git"), "gitdir: "+filepath.Join(repo, ".git")+"\n")
-	if ro := readOnlyProject(root(t, worktree)); len(ro) != 0 || !gitPointer(root(t, worktree)) || gitDir(root(t, worktree)) {
-		t.Fatalf("git file: read-only %v, pointer %v", ro, gitPointer(root(t, worktree)))
+	if ro := readOnlyProject(root(t, worktree)); len(ro) != 0 || !gitguard.IsPointer(root(t, worktree)) || gitguard.HasDir(root(t, worktree)) {
+		t.Fatalf("git file: read-only %v, pointer %v", ro, gitguard.IsPointer(root(t, worktree)))
 	}
 
 	linked := t.TempDir()
 	if err := os.Symlink(filepath.Join(repo, ".git"), filepath.Join(linked, ".git")); err != nil {
 		t.Fatal(err)
 	}
-	if ro := readOnlyProject(root(t, linked)); len(ro) != 0 || gitDir(root(t, linked)) {
+	if ro := readOnlyProject(root(t, linked)); len(ro) != 0 || gitguard.HasDir(root(t, linked)) {
 		t.Fatalf("symlinked .git mounted: %v", ro)
 	}
 }

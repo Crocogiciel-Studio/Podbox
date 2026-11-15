@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/gitguard"
 	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
 )
 
@@ -27,7 +28,7 @@ func (a *app) lsCmd() *cobra.Command {
 			// Sandboxes sharing a workspace and its findings get one warning.
 			type group struct {
 				ws    string
-				g     sandbox.GitIntegrity
+				g     gitguard.Integrity
 				names []string
 			}
 			var groups []*group
@@ -47,7 +48,7 @@ func (a *app) lsCmd() *cobra.Command {
 				byKey[key].names = append(byKey[key].names, s.Name)
 			}
 			for _, g := range groups {
-				a.out.Warn("%s", sandbox.GitWarning(g.ws, g.g, g.names...))
+				a.out.Warn("%s", gitguard.Warning(g.ws, g.g, g.names...))
 			}
 			return a.out.Print(list, func(w io.Writer) {
 				tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)

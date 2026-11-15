@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/fsutil"
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
 )
 
@@ -90,7 +91,7 @@ func (s Store) Save(m Meta) error {
 	if err != nil {
 		return err
 	}
-	return policy.WriteAtomic(s.metaPath(m.Name), append(b, '\n'))
+	return fsutil.WriteAtomic(s.metaPath(m.Name), append(b, '\n'))
 }
 
 // Remove deletes a sandbox's state directory.

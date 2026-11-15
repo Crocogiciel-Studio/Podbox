@@ -6,14 +6,14 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/gitguard"
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
-	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
 )
 
 type gitCheckResult struct {
-	Name         string                `json:"name"`
-	Accepted     bool                  `json:"accepted,omitempty"`
-	GitIntegrity *sandbox.GitIntegrity `json:"git_integrity"`
+	Name         string              `json:"name"`
+	Accepted     bool                `json:"accepted,omitempty"`
+	GitIntegrity *gitguard.Integrity `json:"git_integrity"`
 }
 
 func (a *app) gitCheckCmd() *cobra.Command {
@@ -41,7 +41,7 @@ func (a *app) gitCheckCmd() *cobra.Command {
 				return err
 			}
 			if !g.OK {
-				a.out.Warn("%s", sandbox.GitWarning(meta.Workspace, *g, meta.Name))
+				a.out.Warn("%s", gitguard.Warning(meta.Workspace, *g, meta.Name))
 			}
 			err = a.out.Print(gitCheckResult{meta.Name, accept, g}, func(w io.Writer) {
 				switch {

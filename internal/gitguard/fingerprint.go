@@ -1,4 +1,8 @@
-package workspace
+// Package gitguard holds every protection podbox applies to a workspace's git
+// directory and hook files: the read-only binds (mounts.go), the fingerprint
+// and its diff (fingerprint.go, hooks.go) and the advice printed on findings
+// (report.go).
+package gitguard
 
 import (
 	"bufio"
@@ -15,17 +19,19 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
 // The agent can write the git directory (it must, to commit), and git on the
-// host trusts what it finds there. A GitPrint records the parts of .git that
+// host trusts what it finds there. A Print records the parts of .git that
 // can make host git run commands or read another repository; normal churn
 // (objects, refs, logs, index, HEAD, ...) is left out so commits, branches,
 // rebases, stashes and gc do not change it. It also records the worktree
 // files that define hooks (see fingerprintHooks).
 
-// GitPrint is a fingerprint of a workspace's .git.
-type GitPrint struct {
+// Print is a fingerprint of a workspace's .git.
+type Print struct {
 	Kind    string `json:"kind"`              // dir, file, symlink, none or other
 	Pointer string `json:"pointer,omitempty"` // sha256 of a .git file
 	// Entries are the top-level names, and the entries of each linked
@@ -42,9 +48,9 @@ type GitPrint struct {
 	HookFiles int `json:"hook_files,omitempty"`
 }
 
-// GitFinding is one suspicious difference, with a path relative to the
+// Finding is one suspicious difference, with a path relative to the
 // workspace.
-type GitFinding struct {
+type Finding struct {
 	Path   string `json:"path"` // "" for a finding on all hook files
 	Reason string `json:"reason"`
 	Hook   bool   `json:"hook,omitempty"` // a worktree hook file, outside .git
@@ -84,15 +90,17 @@ func worktreeDir(g *os.Root, rel string) bool {
 		return false
 	}
 	gd := path.Dir(parent)
-	if gd == "." {
-		return true
-	}
-	fi, err := Lstat(g, gd+"/HEAD")
+	return gd == "." || isGitDir(g, gd)
+}
+
+// isGitDir reports a git directory at rel: one holding a regular HEAD.
+func isGitDir(r *os.Root, rel string) bool {
+	fi, err := workspace.Lstat(r, path.Join(rel, "HEAD"))
 	return err == nil && fi.Mode().IsRegular()
 }
 
 // isChurnEntry reports an entry git creates and removes itself: a
-// top-level name, or a worktree entry path (see GitPrint.Entries).
+// top-level name, or a worktree entry path (see Print.Entries).
 func isChurnEntry(e string) bool {
 	if i := strings.LastIndexByte(e, '/'); i >= 0 {
 		n := e[i+1:]
@@ -109,7 +117,7 @@ var stdCommondir = func() string { s := sha256.Sum256([]byte("../..\n")); return
 // did not exist in old, holding what git itself writes there: the agent (or
 // the user) ran git worktree add. Its gitdir is a back-pointer git only uses
 // to list and prune worktrees.
-func newWorktreeFile(old GitPrint, rel, sum string) bool {
+func newWorktreeFile(old Print, rel, sum string) bool {
 	dir := path.Dir(rel)
 	for _, e := range old.Entries {
 		if strings.HasPrefix(e, dir+"/") {
@@ -166,18 +174,18 @@ func why(rel string) string {
 }
 
 // maxGitFile caps the bytes hashed of one watched git file; a larger one
-// is recorded as Oversized and always reported.
+// is recorded as workspace.Oversized and always reported.
 const maxGitFile = 1 << 20
 
 // maxTodo caps the rebase todo read; a larger one counts as pending exec.
 const maxTodo = 8 << 20
 
-// FingerprintGit records the .git of workspace ws and its hook files. It
+// Fingerprint records the .git of workspace ws and its hook files. It
 // reads ws through an os.Root and never follows a symbolic link.
-func FingerprintGit(ws string) (GitPrint, error) {
+func Fingerprint(ws string) (Print, error) {
 	r, err := os.OpenRoot(ws)
 	if err != nil {
-		return GitPrint{}, err
+		return Print{}, err
 	}
 	defer r.Close()
 	p, err := fingerprintGitDir(r)
@@ -185,23 +193,23 @@ func FingerprintGit(ws string) (GitPrint, error) {
 	return p, err
 }
 
-func fingerprintGitDir(r *os.Root) (GitPrint, error) {
+func fingerprintGitDir(r *os.Root) (Print, error) {
 	fi, err := r.Lstat(".git")
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return GitPrint{Kind: "none"}, nil
+		return Print{Kind: "none"}, nil
 	case err != nil:
-		return GitPrint{}, err
+		return Print{}, err
 	case fi.Mode()&fs.ModeSymlink != 0:
-		return GitPrint{Kind: "symlink"}, nil
+		return Print{Kind: "symlink"}, nil
 	case fi.Mode().IsRegular():
-		sum, err := HashFile(r, ".git", maxGitFile)
-		return GitPrint{Kind: "file", Pointer: sum}, err
+		sum, err := workspace.HashFile(r, ".git", maxGitFile)
+		return Print{Kind: "file", Pointer: sum}, err
 	case !fi.IsDir():
-		return GitPrint{Kind: "other"}, nil
+		return Print{Kind: "other"}, nil
 	}
-	p := GitPrint{Kind: "dir", Files: map[string]string{}, Links: map[string]string{}}
-	g, err := OpenDir(r, ".git")
+	p := Print{Kind: "dir", Files: map[string]string{}, Links: map[string]string{}}
+	g, err := workspace.OpenDir(r, ".git")
 	if err != nil {
 		return p, err
 	}
@@ -235,7 +243,7 @@ func fingerprintGitDir(r *os.Root) (GitPrint, error) {
 				p.Links[rel] = t
 			}
 		case d.Type().IsRegular() && why(rel) != "":
-			if sum, err := HashFile(g, rel, maxGitFile); err == nil {
+			if sum, err := workspace.HashFile(g, rel, maxGitFile); err == nil {
 				p.Files[rel] = sum
 			}
 		}
@@ -246,8 +254,8 @@ func fingerprintGitDir(r *os.Root) (GitPrint, error) {
 
 // pendingExec reports exec lines that `git rebase --continue` would run.
 func pendingExec(g *os.Root, todo string) bool {
-	b, err := ReadFile(g, todo, maxTodo)
-	if errors.Is(err, ErrTooLarge) {
+	b, err := workspace.ReadFile(g, todo, maxTodo)
+	if errors.Is(err, workspace.ErrTooLarge) {
 		return true // unchecked: reported
 	}
 	if err != nil {
@@ -264,22 +272,22 @@ func pendingExec(g *os.Root, todo string) bool {
 	return false
 }
 
-// DiffGit lists what changed from old to cur that git on the host could
+// Diff lists what changed from old to cur that git on the host could
 // act on, sorted by path.
-func DiffGit(old, cur GitPrint) []GitFinding {
+func Diff(old, cur Print) []Finding {
 	out := append(diffGitDir(old, cur), diffHooks(old, cur)...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
 }
 
-func diffGitDir(old, cur GitPrint) []GitFinding {
-	out := []GitFinding{}
+func diffGitDir(old, cur Print) []Finding {
+	out := []Finding{}
 	add := func(rel, reason string) {
 		p := ".git"
 		if rel != "" {
 			p += "/" + rel
 		}
-		out = append(out, GitFinding{Path: p, Reason: reason})
+		out = append(out, Finding{Path: p, Reason: reason})
 	}
 	if old.Kind != cur.Kind {
 		reason := fmt.Sprintf("was %s, is now %s", kindName(old.Kind), kindName(cur.Kind))
@@ -289,7 +297,7 @@ func diffGitDir(old, cur GitPrint) []GitFinding {
 		add("", reason)
 		return out
 	}
-	if cur.Kind == "file" && cur.Pointer == Oversized {
+	if cur.Kind == "file" && cur.Pointer == workspace.Oversized {
 		add("", oversized)
 	} else if cur.Kind == "file" && old.Pointer != cur.Pointer {
 		add("", "changed: this pointer sends git on the host to another git directory")
@@ -299,7 +307,7 @@ func diffGitDir(old, cur GitPrint) []GitFinding {
 	}
 	seen := map[string]bool{}
 	for rel, sum := range cur.Files {
-		if sum == Oversized {
+		if sum == workspace.Oversized {
 			add(rel, oversized+": "+why(rel))
 			seen[rel] = true
 			continue

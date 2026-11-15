@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/gitguard"
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
@@ -51,15 +52,15 @@ func classify(err error) error {
 }
 
 type actionResult struct {
-	Name         string                `json:"name"`
-	Action       string                `json:"action"`
-	GitIntegrity *sandbox.GitIntegrity `json:"git_integrity,omitempty"`
-	Info         string                `json:"info,omitempty"`
+	Name         string              `json:"name"`
+	Action       string              `json:"action"`
+	GitIntegrity *gitguard.Integrity `json:"git_integrity,omitempty"`
+	Info         string              `json:"info,omitempty"`
 	// Imported lists what create took from the project files.
 	Imported *sandbox.Imported `json:"imported,omitempty"`
 }
 
-func (a *app) done(name, action string, g *sandbox.GitIntegrity, info string) error {
+func (a *app) done(name, action string, g *gitguard.Integrity, info string) error {
 	return a.out.Print(actionResult{Name: name, Action: action, GitIntegrity: g, Info: info}, func(w io.Writer) { fmt.Fprintf(w, "%s %s\n", name, action) })
 }
 
@@ -70,7 +71,7 @@ func (a *app) hookNotice(m *sandbox.Manager, name string) string {
 	if err != nil {
 		return ""
 	}
-	n := sandbox.HookNotice(meta)
+	n := gitguard.Notice(meta.Name, meta.Workspace)
 	if n != "" {
 		a.out.Info("info: %s", n)
 	}
@@ -79,7 +80,7 @@ func (a *app) hookNotice(m *sandbox.Manager, name string) string {
 
 // gitCheck compares the sandbox's .git with its fingerprint and warns on
 // findings; nil when there is nothing to compare. It never fails the command.
-func (a *app) gitCheck(m *sandbox.Manager, name string) *sandbox.GitIntegrity {
+func (a *app) gitCheck(m *sandbox.Manager, name string) *gitguard.Integrity {
 	meta, err := m.Store.Load(name)
 	if err != nil {
 		return nil
@@ -90,7 +91,7 @@ func (a *app) gitCheck(m *sandbox.Manager, name string) *sandbox.GitIntegrity {
 		return nil
 	}
 	if g != nil && !g.OK {
-		a.out.Warn("%s", sandbox.GitWarning(meta.Workspace, *g, meta.Name))
+		a.out.Warn("%s", gitguard.Warning(meta.Workspace, *g, meta.Name))
 	}
 	return g
 }

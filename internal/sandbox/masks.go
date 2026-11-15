@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Crocogiciel-Studio/podbox/internal/policy"
+	"github.com/Crocogiciel-Studio/podbox/internal/fsutil"
 	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
@@ -43,7 +43,7 @@ func (s Store) saveMasks(name string, ts []workspace.Tracked) error {
 	if err != nil {
 		return err
 	}
-	return policy.WriteAtomic(s.masksPath(name), append(b, '\n'))
+	return fsutil.WriteAtomic(s.masksPath(name), append(b, '\n'))
 }
 
 // ResolveMasks computes the masks of a sandbox from the .sandboxignore
