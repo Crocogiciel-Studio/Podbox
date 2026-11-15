@@ -74,6 +74,20 @@ The live `.git` is compared with the fingerprint after `run`, `attach` and `exec
 
 The check runs when podbox does: a git command you run on the host before any podbox command is not protected. For untrusted work, prefer the upcoming `--clone` mode, which keeps the agent away from the host repository's git directory.
 
+## Agent context
+
+At every `start`, podbox tells the agent that it is sandboxed and what to ask the human when a request is refused. The text is the same for every sandbox of an agent and names none, because the agent home volume is shared by all of them: it points to `$PODBOX_SANDBOX` and to `/run/podbox/policy.json`.
+
+- `claude`: a podbox block between `<!-- podbox:begin -->` and `<!-- podbox:end -->` markers in `~/.claude/CLAUDE.md`, and the skill `~/.claude/skills/podbox-sandbox/SKILL.md`. Text outside the markers is kept; repeated starts never duplicate the block.
+- `kiro`: `~/.kiro/steering/podbox.md`, loaded in every interaction.
+- `shell`: nothing.
+- Files are written inside the agent container, in the agent home volume, and rewritten at each start from the running podbox version, so an edit by the agent does not outlive a restart and an upgrade reaches existing sandboxes. A file that cannot be merged (a begin marker without end marker) is left as is and `start` warns; a failed write only warns.
+- Nothing is written in the project, in the host `$HOME` or in the host's agent configuration.
+
+The agent also reads its policy at `/run/podbox/policy.json`, a read-only mount of a directory podbox keeps for it (never the sandbox state directory). It is refreshed with the effective policy, so it is current after `policy allow|deny|reload` without a restart. It shows the sandbox, the workspace and, per rule, `host`, `allow` and `ports`: no layer, no warning and no `allow_private`. An agent running from before this feature needs a restart to get the mount.
+
+The context informs; it does not enforce. An agent that ignores it is still bound by the proxy and the container.
+
 ## Known egress channels
 
 Every allowlisted host can receive what the agent sends it. Among the defaults:

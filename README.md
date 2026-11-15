@@ -57,7 +57,7 @@ podbox policy show claude-my-project
 | --- | --- |
 | `run <agent> [path] [--name]` | create if absent, start, open an agent session |
 | `create <agent> [path] [--name]` | create a sandbox without starting it |
-| `start <name>` / `stop <name>` | start (recreating stopped containers with fresh masks) / stop |
+| `start <name>` / `stop <name>` | start (recreating stopped containers with fresh masks, and rewriting the [agent context](docs/security-model.md#agent-context) in the agent home) / stop |
 | `rm <name> [--volumes]` | remove containers, network and state; `--volumes` also drops the agent login |
 | `ls` | list sandboxes, from podman labels and the state directory |
 | `exec <name> -- <cmd>...` | run a command in the workspace, exit with its code |
@@ -111,6 +111,7 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 - Masks are resolved when the agent container is (re)created; files created later are not masked until `stop` + `start`. Writes into masked directories are refused. Masks follow their files when a parent directory is renamed (inode tracking; not on Windows hosts).
 - An allowlisted host is reachable on ports 80 and 443 only; list other ports with `ports:` on the rule or `podbox policy allow <name> <host> --port N`.
 - Only HTTP(S) leaves the sandbox: no SSH git remotes, no databases.
+- The agent context tells Claude and Kiro that they are sandboxed and what to ask the human; it informs and enforces nothing, the proxy and the container do. It is verified by the e2e suite, not against a live Claude or Kiro session.
 - macOS and Windows are designed for but not tested in CI.
 
 ## License

@@ -56,6 +56,24 @@ Each refusal ends with its fix: the `policy allow` command (with `--port N` off 
 
 Changes rewrite the effective file atomically; the running proxy applies them within about a second. Edits to the global file by hand are picked up at the next `policy` change or `start`.
 
+## The agent's view
+
+The agent reads its effective policy at `/run/podbox/policy.json`, read-only and refreshed with every policy change (`policy allow|deny|reload`, `create`, `start`), no restart needed. It carries less than `policy show`:
+
+```json
+{
+  "version": 1,
+  "sandbox": "claude-my-project",
+  "workspace": "/home/me/my-project",
+  "rules": [
+    {"host": "github.com", "allow": true, "ports": "80,443"},
+    {"host": "ads.example", "allow": false, "ports": "all"}
+  ]
+}
+```
+
+No layer, no warning and no `allow_private`. It is information for the agent; the proxy enforces the policy. See [agent context](security-model.md#agent-context).
+
 ## Project files are snapshotted
 
 The agent can write the project, so podbox never trusts the live `.podbox/policy.yaml` or `.sandboxignore`. `create` copies both into the sandbox state directory; every later compilation (`policy allow|deny`, `start`) and mask computation uses that copy only. In the agent container both paths, when they exist, are mounted read-only.
