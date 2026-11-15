@@ -114,6 +114,25 @@ func skipWalk(g *os.Root, rel string) bool {
 	return store == "objects" || strings.HasPrefix(store, "modules/") && isGitDir(g, path.Dir(store))
 }
 
+// shallowLinks records the symbolic links directly inside dir (relative to
+// g) without walking further: a store that is not walked still cannot point
+// git at objects outside .git through a linked fan-out directory or pack.
+func shallowLinks(g *os.Root, dir string, links map[string]string) {
+	es, err := fs.ReadDir(g.FS(), dir)
+	if err != nil {
+		return
+	}
+	for _, e := range es {
+		if e.Type()&fs.ModeSymlink == 0 {
+			continue
+		}
+		rel := path.Join(dir, e.Name())
+		if t, err := g.Readlink(rel); err == nil {
+			links[rel] = t
+		}
+	}
+}
+
 // isChurnEntry reports an entry git creates and removes itself: a
 // top-level name, or a worktree entry path (see Print.Entries).
 func isChurnEntry(e string) bool {
@@ -242,6 +261,8 @@ func fingerprintGitDir(r *os.Root) (Print, error) {
 			return nil // unreadable entries are unreadable to host git too
 		}
 		if d.IsDir() && skipWalk(g, rel) {
+			shallowLinks(g, rel, p.Links)
+			shallowLinks(g, path.Join(rel, "pack"), p.Links)
 			return fs.SkipDir
 		}
 		if d.IsDir() && worktreeDir(g, rel) {

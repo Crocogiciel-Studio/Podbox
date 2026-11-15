@@ -277,6 +277,7 @@ func tree(t *testing.T, files map[string]string) string {
 }
 
 // TestObjectStoreNotWalked: the fingerprint skips loose objects and packs
+// (recording only the links directly in the store and its pack directory)
 // but still watches objects/info and the git directory of a submodule whose
 // name has an objects segment.
 func TestObjectStoreNotWalked(t *testing.T) {
@@ -288,13 +289,19 @@ func TestObjectStoreNotWalked(t *testing.T) {
 	if err := os.Symlink("/etc/passwd", filepath.Join(g, "objects/pack/planted")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(g, "lfs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc", filepath.Join(g, "lfs/l")); err != nil {
+		t.Fatal(err)
+	}
 	writeFile(t, filepath.Join(g, "objects/info/alternates"), "/tmp/x\n")
 	writeFile(t, filepath.Join(g, "modules/objects/x/config"), "[core]\n\tfsmonitor = x\n")
 	var got []string
 	for _, f := range Diff(before, printOf(t, ws)) {
 		got = append(got, f.Path)
 	}
-	if want := []string{".git/modules/objects/x/config", ".git/objects/info/alternates"}; !slices.Equal(got, want) {
+	if want := []string{".git/lfs/l", ".git/modules/objects/x/config", ".git/objects/info/alternates", ".git/objects/pack/planted"}; !slices.Equal(got, want) {
 		t.Fatalf("findings %v, want %v", got, want)
 	}
 }
