@@ -24,8 +24,8 @@ const maxRead = 1 << 20
 const viewFile = agentMount + "/" + AgentPolicyFile
 
 const (
-	// The read stops one byte past maxRead, so over the cap is detectable.
-	readScript = `[ -e "$1" ] || exit 3; head -c 1048577 "$1"`
+	// A FIFO or device is refused, not read. The read stops one byte past maxRead, so over the cap is detectable.
+	readScript = `[ -e "$1" ] || exit 3; [ -f "$1" ] || { echo "not a regular file" >&2; exit 1; }; head -c 1048577 "$1"`
 	// The write goes through a per-call temporary file next to the real
 	// target (a symbolic link is followed, not replaced) and keeps its mode.
 	writeScript = `mkdir -p "$(dirname "$1")" || exit 1
@@ -34,7 +34,7 @@ tmp="$f.podbox-tmp.$$"
 trap 'rm -f "$tmp"' EXIT
 cat > "$tmp" || exit 1
 if [ -e "$f" ]; then chmod "$(stat -c %a "$f")" "$tmp" || exit 1; fi
-mv "$tmp" "$f"`
+mv -T "$tmp" "$f"`
 )
 
 // installContext writes the agent's context into its home, merged with

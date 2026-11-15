@@ -83,6 +83,17 @@ check "CLAUDE.md is still a symbolic link" sx "$NAME" "test -L $CLAUDE_MD"
 check "the block went to the link target, text and mode kept" sx "$NAME" "grep -q linked /home/agent/real-claude.md && grep -q 'podbox:begin' /home/agent/real-claude.md && test \"\$(stat -c %a /home/agent/real-claude.md)\" = 600"
 sx "$NAME" "rm -f $CLAUDE_MD /home/agent/real-claude.md"
 
+echo "== FIFO CLAUDE.md and directory skill"
+sx "$NAME" "rm -f $CLAUDE_MD $SKILL; mkfifo $CLAUDE_MD; mkdir $SKILL"
+pb stop "$NAME" >/dev/null 2>&1
+err=$(timeout 120 "$PODBOX" start "$NAME" 2>&1 >/dev/null)
+check "start returns with a FIFO CLAUDE.md" test $? -eq 0
+check "start warns about CLAUDE.md" grep -q 'CLAUDE.md' <<<"$err"
+check "start warns about the skill" grep -q 'SKILL.md' <<<"$err"
+check "the FIFO is untouched" sx "$NAME" "test -p $CLAUDE_MD"
+check "the skill directory is untouched and empty" sx "$NAME" "test -d $SKILL && test -z \"\$(ls -A $SKILL)\""
+sx "$NAME" "rm -rf $CLAUDE_MD $SKILL"
+
 echo "== unmergeable CLAUDE.md"
 sx "$NAME" "printf 'x\n<!-- podbox:begin -->\nhalf\n' > $CLAUDE_MD"
 sx "$NAME" "cat $CLAUDE_MD" >"$PROJ3/before"
