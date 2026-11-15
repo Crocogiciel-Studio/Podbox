@@ -11,18 +11,28 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/config"
 	"github.com/Crocogiciel-Studio/podbox/internal/doctor"
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 )
 
 func (a *app) doctorCmd() *cobra.Command {
-	return &cobra.Command{
+	var pull bool
+	c := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check host prerequisites and explain how to fix them",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cs := doctor.Run(cmd.Context(), hostEnv())
+			_, paths, err := a.store()
+			if err != nil {
+				return err
+			}
+			cfg, err := config.Load(paths.Config)
+			if err != nil {
+				return output.Wrap(output.ExitUsage, err, "config")
+			}
+			cs := doctor.Run(cmd.Context(), hostEnv(cfg.Images.Base, pull))
 			if err := a.out.Print(cs, func(w io.Writer) { printChecks(w, cs) }); err != nil {
 				return err
 			}
@@ -32,14 +42,16 @@ func (a *app) doctorCmd() *cobra.Command {
 			return nil
 		},
 	}
+	c.Flags().BoolVar(&pull, "pull", false, "also pull the base image when it is not present (needs the network)")
+	return c
 }
 
-func hostEnv() doctor.Env {
+func hostEnv(base string, pull bool) doctor.Env {
 	name := os.Getenv("USER")
 	if u, err := user.Current(); err == nil {
 		name = u.Username
 	}
-	return doctor.Env{
+	e := doctor.Env{
 		GOOS: goruntime.GOOS, User: name, UID: os.Getuid(),
 		LocatePodman: runtime.LocatePodman,
 		Info: func(ctx context.Context) (runtime.Info, error) {
@@ -52,7 +64,15 @@ func hostEnv() doctor.Env {
 		ReadFile:        os.ReadFile,
 		Stat:            os.Stat,
 		LimitsDelegated: runtime.LimitsDelegated,
+		BaseImage:       base,
 	}
+	if p, err := runtime.NewPodman(); err == nil {
+		e.ImageExists = p.ImageExists
+		if pull {
+			e.Pull = p.ImagePull
+		}
+	}
+	return e
 }
 
 func printChecks(w io.Writer, cs []doctor.Check) {

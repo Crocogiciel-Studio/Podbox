@@ -116,6 +116,11 @@ func (p *Podman) ImageExists(ctx context.Context, ref string) (bool, error) {
 	return p.exists(ctx, "image", "exists", ref)
 }
 
+func (p *Podman) ImagePull(ctx context.Context, ref string) error {
+	_, err := p.out(ctx, "pull", "--quiet", ref)
+	return err
+}
+
 func (p *Podman) ImageBuild(ctx context.Context, s BuildSpec) error {
 	args := []string{"build", "-t", s.Tag, "-f", s.File}
 	if s.NoProxyEnv {

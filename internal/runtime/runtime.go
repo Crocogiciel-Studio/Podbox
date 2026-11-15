@@ -20,6 +20,7 @@ type Runtime interface {
 	NetworkList(ctx context.Context, label string) ([]string, error)
 
 	ImageExists(ctx context.Context, ref string) (bool, error)
+	ImagePull(ctx context.Context, ref string) error
 	ImageBuild(ctx context.Context, spec BuildSpec) error
 	ImageList(ctx context.Context, label string) ([]Image, error)
 	ImageRemove(ctx context.Context, ref string) error

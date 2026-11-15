@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,39 @@ func TestVersionAtLeast(t *testing.T) {
 	for v, want := range map[string]bool{"4.4.0": true, "5.0": true, "4.3.9": false, "3.9": false, "x": false} {
 		if versionAtLeast(v, 4, 4) != want {
 			t.Errorf("%s", v)
+		}
+	}
+}
+
+func TestBaseImage(t *testing.T) {
+	pullErr := errors.New("pull docker.io/x: connection refused")
+	cases := []struct {
+		name    string
+		exists  bool
+		pull    func(context.Context, string) error
+		status  string
+		pulled  bool
+		wantFix bool
+	}{
+		{"present", true, nil, OK, false, false},
+		{"absent offline", false, nil, Warn, false, true},
+		{"absent pulled", false, func(context.Context, string) error { return nil }, OK, true, false},
+		{"absent unpullable", false, func(context.Context, string) error { return pullErr }, Fail, true, true},
+	}
+	for _, c := range cases {
+		e, _ := healthy()
+		pulled := false
+		e.BaseImage = "docker.io/x"
+		e.ImageExists = func(_ context.Context, ref string) (bool, error) { return c.exists && ref == "docker.io/x", nil }
+		if c.pull != nil {
+			e.Pull = func(ctx context.Context, ref string) error { pulled = true; return c.pull(ctx, ref) }
+		}
+		got := find(t, Run(context.Background(), e), "base-image")
+		if got.Status != c.status || pulled != c.pulled || (got.Fix != "") != c.wantFix {
+			t.Errorf("%s: %+v pulled=%v", c.name, got, pulled)
+		}
+		if c.status == Fail && !strings.Contains(got.Fix, "images.base") {
+			t.Errorf("%s: fix lacks images.base: %q", c.name, got.Fix)
 		}
 	}
 }

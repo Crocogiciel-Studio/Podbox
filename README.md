@@ -62,7 +62,7 @@ podbox policy show claude-my-project
 | `git-check <name> [--accept]` | compare `.git` with the fingerprint taken at creation, exit 6 on suspicious changes; `--accept` re-records it |
 | `policy show\|allow\|deny\|reload <name> [host]` | inspect and change the allowlist from the host; `reload --forget-missing` also drops recorded masks found nowhere |
 | `image build <image>... [--force]` / `image ls` | build `proxy`, `base`, `claude`, `kiro`, `shell` |
-| `doctor` | check prerequisites |
+| `doctor [--pull]` | check prerequisites, including that `images.base` is present; `--pull` pulls it when absent |
 | `version` | build information |
 
 Every command accepts `--output json` (`-o json`).

@@ -36,6 +36,11 @@ type Env struct {
 	ReadFile        func(string) ([]byte, error)
 	Stat            func(string) (os.FileInfo, error)
 	LimitsDelegated func(runtime.Info) bool
+	// BaseImage is images.base; ImageExists looks it up locally and Pull,
+	// set only by doctor --pull, fetches it.
+	BaseImage   string
+	ImageExists func(context.Context, string) (bool, error)
+	Pull        func(context.Context, string) error
 }
 
 const minMajor, minMinor = 4, 4
@@ -113,6 +118,7 @@ func Run(ctx context.Context, e Env) []Check {
 	} else {
 		add("selinux", OK, "disabled", "")
 	}
+	baseImage(ctx, e, add)
 	switch info.StorageDriver {
 	case "overlay":
 		add("storage", OK, "overlay", "")
@@ -121,6 +127,31 @@ func Run(ctx context.Context, e Env) []Check {
 			"make /dev/fuse available or install fuse-overlayfs, then podman system reset")
 	}
 	return cs
+}
+
+const baseFix = "set images.base in the podbox config.yaml to an image your registry serves, " +
+	"or add a mirror for its registry in registries.conf (inside the VM with podman machine)"
+
+func baseImage(ctx context.Context, e Env, add func(name, status, detail, fix string)) {
+	if e.BaseImage == "" || e.ImageExists == nil {
+		return
+	}
+	ok, err := e.ImageExists(ctx, e.BaseImage)
+	switch {
+	case err != nil:
+		add("base-image", Warn, "cannot look up "+e.BaseImage+": "+firstLine(err.Error()), "check `podman image exists "+e.BaseImage+"`")
+	case ok:
+		add("base-image", OK, e.BaseImage+" present", "")
+	case e.Pull == nil:
+		add("base-image", Warn, e.BaseImage+" not present: the first image build pulls it",
+			"run podbox doctor --pull to check it is pullable; if not, "+baseFix)
+	default:
+		if err := e.Pull(ctx, e.BaseImage); err != nil {
+			add("base-image", Fail, "cannot pull "+e.BaseImage+": "+firstLine(err.Error()), baseFix)
+		} else {
+			add("base-image", OK, e.BaseImage+" pulled", "")
+		}
+	}
 }
 
 // Failed reports whether any check failed.
