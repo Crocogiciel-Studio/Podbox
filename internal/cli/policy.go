@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -146,18 +147,26 @@ func (a *app) policySetCmd(verb string, allow bool) *cobra.Command {
 				Sandbox string `json:"sandbox"`
 				Host    string `json:"host"`
 				Port    int    `json:"port"`
+				Ports   string `json:"ports"` // the ports the new rule covers: "80,443" or "all"
 				Scope   string `json:"scope"`
 				Allowed bool   `json:"allowed"`
 				Rule    string `json:"rule"`
 				Layer   string `json:"layer"`
-			}{m.Name, policy.NormalizeHost(args[1]), port, scope, d.Allow, "", ""}
+			}{m.Name, policy.NormalizeHost(args[1]), port, policy.Rule{Allow: allow, Ports: ports}.PortList(), scope, d.Allow, "", ""}
 			res.Rule, res.Layer = d.Reason()
 			return a.out.Print(res, func(w io.Writer) {
 				state := "denied"
 				if d.Allow {
 					state = "allowed"
 				}
-				fmt.Fprintf(w, "%s: %s port %d is now %s (decided by %s rule %s)\n", m.Name, res.Host, port, state, res.Layer, res.Rule)
+				on := "on ports " + res.Ports
+				if res.Ports == "all" {
+					on = "on all ports"
+				}
+				fmt.Fprintf(w, "%s: %s is now %s %s (decided by %s rule %s)\n", m.Name, res.Host, state, on, res.Layer, res.Rule)
+				if !strings.HasPrefix(res.Host, "*.") {
+					fmt.Fprintf(w, "  subdomains are not covered; use *.%s for them\n", res.Host)
+				}
 			})
 		},
 	}
