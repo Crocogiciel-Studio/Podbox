@@ -1,54 +1,59 @@
-# Podbox — M0 + v0.1 : sandbox réseau fermé utilisable au quotidien
+# Podbox — M0 + v0.1: closed-network sandbox usable every day
 
 ## Target
 
-Un développeur lance Claude Code ou Kiro en mode autonome dans une sandbox Podman rootless, sur son répertoire projet, par une seule commande `podbox`, sans que l'agent puisse joindre un host hors de l'allowlist, lire un fichier sensible de l'hôte ou du projet, ni atteindre le moteur de conteneurs.
+A developer runs Claude Code or Kiro in autonomous mode inside a rootless Podman sandbox, on their project directory, with a single `podbox` command, without the agent being able to reach a host outside the allowlist, read a sensitive file of the host or the project, or reach the container engine.
 
 ## Hard constraints
 
-- Le moteur de conteneurs est Podman rootless ; aucun compte Docker, Docker Desktop ni privilège root n'est requis.
-- Distribution sous forme d'un binaire unique `podbox` par OS et architecture (Linux, macOS, Windows ; amd64 et arm64), sans dépendance d'exécution autre que Podman.
-- Le conteneur agent n'a aucune route réseau directe vers l'extérieur, vers l'hôte ni vers ses services loopback ; sa seule sortie est le proxy de sa sandbox.
-- Le conteneur agent ne peut résoudre aucun nom de domaine externe.
-- Egress refusé par défaut : seuls les hosts de l'allowlist (défauts globaux + fichier global + fichier projet) sont joignables ; un deny explicite l'emporte toujours ; une politique projet ne peut pas élargir un deny global.
-- Fermeture par défaut : un fichier de politique absent ou invalide n'ouvre aucun accès supplémentaire.
-- Le trafic HTTPS autorisé n'est pas déchiffré en v0.1 ; aucune CA n'est installée dans l'agent.
-- Une requête bloquée reçoit une réponse lisible par l'agent qui nomme le host refusé et la commande à faire exécuter par l'humain pour l'autoriser.
-- L'allowlist d'une sandbox en cours d'exécution se modifie depuis l'hôte sans redémarrer l'agent ; rien dans la sandbox ne peut la modifier.
-- Le proxy peut chaîner vers un proxy d'entreprise sans que l'agent n'en connaisse l'adresse ni les identifiants.
-- Si le proxy d'entreprise intercepte le TLS, la CA d'entreprise fournie est ajoutée aux trust stores de l'agent (sans déchiffrement côté sandbox, l'agent voit les certificats d'entreprise ; la masquer exige la v0.2).
-- Les destinations résolues en loopback, link-local ou métadonnées cloud sont toujours refusées ; celles en IP privée sont refusées sauf règle qui les autorise explicitement (services internes d'entreprise).
-- Les variables de proxy de l'hôte ne sont jamais transmises au conteneur agent.
-- Conteneur agent durci : utilisateur non root, toutes les capabilities retirées, pas d'élévation de privilèges, seccomp par défaut, limites CPU/RAM/PIDs, jamais privilégié, jamais de socket Podman ou Docker monté, aucun montage hôte hors workspace et volume d'auth.
-- Mode `shared` : le projet est monté en lecture-écriture ; les chemins sensibles (`.env*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.kube/`, `.npmrc`, `.pypirc`, `.netrc`, `.docker/config.json`, `.git/hooks/`) sont toujours masqués, sans possibilité d'annulation ; `.sandboxignore` (syntaxe gitignore) ajoute des masques.
-- L'authentification de l'agent (session Claude Code, session Kiro) persiste entre deux lancements dans un volume dédié par agent, jamais dans le `$HOME` de l'hôte.
-- Les images agent (Claude Code, Kiro) se construisent sur le poste à partir de définitions livrées avec `podbox`, sur une image de base configurable (registry interne) ; le proxy ne dépend d'aucun registry.
-- Toute commande accepte `--output json` et renvoie un code de sortie stable et documenté.
-- Licence open source compatible avec la reprise d'idées des projets cités (MIT ou Apache-2.0).
+- The container engine is rootless Podman; no Docker account, Docker Desktop or root privilege is required.
+- Shipped as a single `podbox` binary per OS and architecture (Linux, macOS, Windows; amd64 and arm64), with no runtime dependency other than Podman.
+- The agent container has no direct network route to the outside, to the host or to its loopback services; its only way out is its sandbox's proxy.
+- The agent container cannot resolve any external domain name.
+- Egress denied by default: only allowlisted hosts (global defaults + global file + project file) are reachable; an explicit deny always wins; a project policy cannot widen a global deny.
+- Fail closed: a missing or invalid policy file opens no additional access.
+- Allowed HTTPS traffic is not decrypted in v0.1; no CA is installed in the agent.
+- A blocked request is explained in a way the agent and the human can act on: it names the refused host and the command the human runs to allow it (response body for plain HTTP; `podbox policy log` for HTTPS, whose clients do not show the proxy's CONNECT response).
+- The allowlist of a running sandbox is changed from the host without restarting the agent; nothing in the sandbox can change it.
+- The proxy can chain to a corporate proxy without the agent knowing its address or credentials.
+- If the corporate proxy intercepts TLS, the provided corporate CA is added to the agent's trust stores (without decryption on the sandbox side, the agent sees the corporate certificates; hiding it requires v0.2).
+- Destinations resolving to loopback, link-local or cloud metadata are always refused; private IPs are refused unless a rule explicitly allows them (internal corporate services).
+- The host's proxy variables are never passed to the agent container.
+- Hardened agent container: non-root user, all capabilities dropped, no privilege escalation, default seccomp, CPU/RAM/PID limits, never privileged, never a mounted Podman or Docker socket, no host mount other than the workspace and the auth volume.
+- `shared` mode: the project is mounted read-write; sensitive paths (`.env`, `.env.*` and `.envrc`, except the templates `.env.example`, `.env.sample`, `.env.template`, `.env.dist`, which stay readable by the agent; `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.kube/`, `.npmrc`, `.pypirc`, `.netrc`, `.docker/config.json`) are always masked, with no way to undo it, including after a rename, a hard link or a permission change by the agent (when in doubt, the sandbox refuses to start); `.sandboxignore` (gitignore syntax) adds masks.
+- The project's git hooks also run for the agent's commits; the agent can neither modify nor add a hook in `.git/hooks/`, nor modify `.git/config`.
+- What the agent changes in `.git` that could make the host's git run code (`commondir` redirect, worktrees, alternates, project hook files) is detected and reported to the human, not blocked.
+- The project configuration (`.podbox/policy.yaml`, `.sandboxignore`) is only taken into account at creation or on an explicit reload by the human; podbox never follows a workspace symbolic link on the host side.
+- A workspace equal to the user's home, one of its parents, or containing podbox's configuration or state, is refused.
+- An allowlist rule opens only ports 80 and 443, unless ports are listed explicitly.
+- The agent's authentication (Claude Code session, Kiro session) persists between runs in a dedicated volume per agent, never in the host's `$HOME`.
+- Agent images (Claude Code, Kiro) are built on the workstation from definitions shipped with `podbox`, on a configurable base image (internal registry); the proxy depends on no registry.
+- Every command accepts `--output json` and returns a stable, documented exit code.
+- Open source license compatible with reusing ideas from the cited projects (MIT or Apache-2.0).
 
 ## Non-goals
 
-- Injection de secrets, interception TLS, CA éphémère, `podbox secret` (v0.2).
-- Mode `learn`, logs d'audit structurés (v0.2).
-- Mode `ask`, mise en attente des requêtes, MCP `sandbox-control`, skill `operating-in-sandbox` (v0.3).
-- Mode `clone`, `diff`, `export`, `cp`, `port`, kits (v0.4).
-- Règles par méthode, chemin ou query (exigent le déchiffrement).
-- Trafic non HTTP(S) (git SSH, bases de données).
-- Runtime microVM, backend Kubernetes, Podman-in-Podman, support de Docker Engine.
-- Intégration Sandy (`PodboxProvider`).
-- Vérification automatisée sur macOS et Windows : le support est conçu, la CI vérifie Linux uniquement.
-- Publication d'images sur un registry public.
+- Secret injection, TLS interception, ephemeral CA, `podbox secret` (v0.2).
+- `learn` mode, structured audit logs (v0.2).
+- `ask` mode, holding requests, `sandbox-control` MCP, `operating-in-sandbox` skill (v0.3).
+- `clone` mode, `diff`, `export`, `cp`, `port`, kits (v0.4).
+- Rules per method, path or query (they require decryption).
+- Non-HTTP(S) traffic (git over SSH, databases).
+- microVM runtime, Kubernetes backend, Podman-in-Podman, Docker Engine support.
+- Sandy integration (`PodboxProvider`).
+- Automated verification on macOS and Windows: support is designed in, CI verifies Linux only.
+- Publishing images to a public registry.
 
 ## Done-when
 
-- `podbox run claude [path]` et `podbox run kiro [path]` ouvrent une session interactive de l'agent sur le projet, l'agent pouvant joindre son API et lire/écrire le projet.
-- Après une première connexion, un second `run` du même agent ne redemande pas d'authentification.
-- `podbox ls`, `exec`, `attach`, `stop`, `rm` gèrent les sandboxes créées, en sortie texte et JSON.
-- `podbox doctor` signale chaque prérequis manquant (Podman rootless, subuid/subgid, réseau, SELinux) avec une remédiation.
-- Depuis la sandbox, échouent toutes : une connexion directe vers Internet, une résolution DNS externe, une connexion vers un service loopback de l'hôte, la lecture de `~/.ssh` de l'hôte, la lecture d'un `.env` du projet, l'accès à un socket Podman ou Docker, une requête vers un host hors allowlist.
-- Une requête vers un host hors allowlist renvoie le message lisible par l'agent ; après `podbox policy allow <sandbox> <host>`, la même requête réussit sans redémarrage.
-- Derrière un proxy d'entreprise obligatoire, l'agent joint un host autorisé.
-- Les tests d'évasion ci-dessus tournent en CI Linux sur chaque changement et passent.
+- `podbox run claude [path]` and `podbox run kiro [path]` open an interactive agent session on the project, the agent being able to reach its API and read/write the project.
+- After a first login, a second `run` of the same agent does not ask for authentication again.
+- `podbox ls`, `exec`, `attach`, `stop`, `rm` manage the created sandboxes, in text and JSON output.
+- `podbox doctor` reports each missing prerequisite (rootless Podman, subuid/subgid, network, SELinux) with a remediation.
+- From the sandbox, all of these fail: a direct connection to the Internet, an external DNS resolution, a connection to a host loopback service, reading the host's `~/.ssh`, reading a project `.env`, reaching a Podman or Docker socket, a request to a host outside the allowlist.
+- A request to a host outside the allowlist is explained as above; after `podbox policy allow <sandbox> <host>`, the same request succeeds without a restart.
+- Behind a mandatory corporate proxy, the agent reaches an allowed host.
+- The escape tests above run in Linux CI on every change and pass.
 
 ## Open Questions
 
@@ -56,12 +61,13 @@ None
 
 ## Stakeholders
 
-- Decider: Guillaume (auteur)
+- Decider: Guillaume (author)
 - Owner: Crocogiciel Studio (repo `Crocogiciel-Studio/Podbox`)
-- Consumer: développeurs en entreprise sans Docker ; Sandy (intégration ultérieure)
+- Consumer: developers in companies without Docker; Sandy (later integration)
 
 ## Context
 
-- Étude de faisabilité complète : [feasibility-study.md](./feasibility-study.md).
-- Roadmap révisée et arbitrages (allowlist sans déchiffrement, agent sans DNS, proxy embarqué, chaînage d'entreprise avancé en v0.1) : décidés en session d'onboarding le 2026-11-14.
-- Constats M0 (Podman 5.7, rootless, Linux, derrière un proxy obligatoire) : Podman transmet par défaut les variables de proxy de l'hôte aux conteneurs ; un réseau `--internal --disable-dns` hérite quand même du `resolv.conf` de l'hôte ; une fois ces deux points neutralisés, le conteneur interne n'a ni egress direct, ni DNS, ni accès au loopback ou à la passerelle de l'hôte, et joint le conteneur proxy, lequel sort via le proxy amont.
+- Full feasibility study: [feasibility-study.md](./feasibility-study.md).
+- Revised roadmap and trade-offs (allowlist without decryption, agent without DNS, embedded proxy, corporate chaining brought forward to v0.1): decided in the onboarding session on 2026-11-14.
+- Amendments of 2026-11-15 (user decisions taken during the validation rounds): git hooks run read-only instead of being masked; `.git` tampering detected rather than blocked (`podbox git-check`, exit codes 6 and 7); project configuration frozen at creation; dangerous workspaces refused; ports 80/443 by default; env templates readable by the agent; HTTPS refusals explained through `podbox policy log`. Details: [run.md](./run.md) and `docs/security-model.md`.
+- M0 findings (Podman 5.7, rootless, Linux, behind a mandatory proxy): Podman passes the host's proxy variables to containers by default; an `--internal --disable-dns` network still inherits the host's `resolv.conf`; once both are neutralised, the internal container has no direct egress, no DNS, no access to the host's loopback or gateway, and reaches the proxy container, which goes out through the upstream proxy.
