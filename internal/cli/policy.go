@@ -121,7 +121,7 @@ func (a *app) policySetCmd(verb string, allow bool) *cobra.Command {
 				path = st.SessionPath(m.Name)
 			case policy.LayerProject:
 				// The project file for the repository, the snapshot for enforcement.
-				if err := sandbox.SetProjectRule(m.Workspace, args[1], allow, ports); err != nil {
+				if err := sandbox.SetProjectRule(st.Source(m), args[1], allow, ports); err != nil {
 					return fmt.Errorf("%s: %w", verb, err)
 				}
 				path = st.ProjectPolicyPath(m.Name)

@@ -34,6 +34,8 @@ type actionResult struct {
 	Info         string              `json:"info,omitempty"`
 	// Imported lists what create took from the project files.
 	Imported *sandbox.Imported `json:"imported,omitempty"`
+	// Clone is what create made for a clone sandbox.
+	Clone *sandbox.CloneReport `json:"clone,omitempty"`
 }
 
 func (a *app) done(name, action string, g *gitguard.Integrity, info string) error {
@@ -47,7 +49,7 @@ func (a *app) hookNotice(m *sandbox.Manager, name string) string {
 	if err != nil {
 		return ""
 	}
-	n := gitguard.Notice(meta.Name, meta.Workspace)
+	n := meta.Guard().Notice(meta.Name, meta.Workspace)
 	if n != "" {
 		a.out.Info("info: %s", n)
 	}
@@ -106,13 +108,19 @@ func (a *app) lifecycleCmds() []*cobra.Command {
 				return err
 			}
 			g := a.gitCheck(m, args[0]) // before the fingerprint is deleted
-			if err := m.Remove(cmd.Context(), args[0], volumes); err != nil {
+			rm, err := m.Remove(cmd.Context(), args[0], volumes)
+			if err != nil {
 				return err
 			}
-			return a.done(args[0], "removed", g, "")
+			info := ""
+			if rm.CloneKept {
+				info = fmt.Sprintf("the clone, which holds the agent's work, is kept at %s; podbox rm %s --volumes removes it", rm.ClonePath, args[0])
+				a.out.Info("%s", info)
+			}
+			return a.done(args[0], "removed", g, info)
 		},
 	}
-	rm.Flags().BoolVar(&volumes, "volumes", false, "also remove the agent home volume (loses agent login)")
+	rm.Flags().BoolVar(&volumes, "volumes", false, "also remove the agent home volume (loses agent login) and a clone sandbox's clone (loses the agent's work)")
 	return []*cobra.Command{start, stop, rm, a.gitCheckCmd()}
 }
 

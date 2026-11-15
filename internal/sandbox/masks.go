@@ -58,7 +58,7 @@ func (s Store) ResolveMasks(m Meta) (workspace.Result, error) {
 	if err != nil {
 		return workspace.Result{}, err
 	}
-	res, err := workspace.Resolve(m.Workspace, ignore, ts)
+	res, err := workspace.Resolve(s.Source(m), ignore, ts)
 	if err != nil {
 		return res, err
 	}

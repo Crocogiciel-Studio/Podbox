@@ -139,7 +139,7 @@ func (s Store) readProject(m Meta) (Changes, []liveFile, error) {
 	var c Changes
 	var out []liveFile
 	for _, f := range s.projectFiles(m.Name) {
-		live, ok, err := readLive(m.Workspace, f.rel)
+		live, ok, err := readLive(s.Source(m), f.rel)
 		if err != nil {
 			c.Warnings = append(c.Warnings, err.Error())
 			ok = false
@@ -198,11 +198,11 @@ func (s Store) Reload(m Meta, forgetMissing bool) (Changes, policy.Effective, er
 	if err != nil {
 		return c, policy.Effective{}, err
 	}
-	res, err := workspace.Resolve(m.Workspace, ignore, ts)
+	res, err := workspace.Resolve(s.Source(m), ignore, ts)
 	if err != nil {
 		return c, policy.Effective{}, err
 	}
-	kept, dropped, err := workspace.Shrink(m.Workspace, res, ignore, forgetMissing)
+	kept, dropped, err := workspace.Shrink(s.Source(m), res, ignore, forgetMissing)
 	if err != nil {
 		return c, policy.Effective{}, err
 	}
@@ -254,7 +254,7 @@ func (s Store) compileWith(m Meta, rules []byte, ok bool) (policy.Effective, err
 func (s Store) Drift(m Meta) []string {
 	var out []string
 	for _, f := range s.projectFiles(m.Name) {
-		live, lok, lerr := readLive(m.Workspace, f.rel)
+		live, lok, lerr := readLive(s.Source(m), f.rel)
 		snap, sok, serr := readSnap(f.snap)
 		if lerr != nil || serr != nil || lok != sok || !bytes.Equal(live, snap) {
 			out = append(out, f.rel)
@@ -329,16 +329,16 @@ func diff(a, b []string) (added, removed []string) {
 }
 
 // readOnlyProject lists the existing project paths to mount read-only in the
-// agent, then the git ones (see gitguard.ReadOnly); symlinks are skipped so
+// agent, then the git ones the Guard asks for; symlinks are skipped so
 // nothing outside the workspace is exposed.
-func readOnlyProject(r *os.Root) []string {
+func readOnlyProject(r *os.Root, g gitguard.Guard) []string {
 	var out []string
 	for _, rel := range projectDirs {
 		if fi, err := workspace.Lstat(r, rel); err == nil && fi.Mode()&fs.ModeSymlink == 0 {
 			out = append(out, rel)
 		}
 	}
-	return append(out, gitguard.ReadOnly(r)...)
+	return append(out, g.ReadOnly(r)...)
 }
 
 // checkMounts re-validates, right before the container is created, every

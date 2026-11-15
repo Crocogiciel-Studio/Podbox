@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Crocogiciel-Studio/podbox/internal/fsutil"
+	"github.com/Crocogiciel-Studio/podbox/internal/gitguard"
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
 )
 
@@ -24,12 +25,38 @@ type Meta struct {
 	Agent     string    `json:"agent"`
 	Workspace string    `json:"workspace"`
 	Created   time.Time `json:"created"`
+	// Mode is ModeShared (empty in records written before clone mode) or
+	// ModeClone; fixed at creation.
+	Mode string `json:"mode,omitempty"`
+	// Base is the host commit a clone was made from.
+	Base string `json:"base,omitempty"`
 }
+
+// Sandbox modes.
+const (
+	ModeShared = "shared"
+	ModeClone  = "clone"
+)
+
+// IsClone reports a sandbox whose workspace is its own git clone.
+func (m Meta) IsClone() bool { return m.Mode == ModeClone }
+
+// ModeName is the mode, shared when unset.
+func (m Meta) ModeName() string {
+	if m.Mode == "" {
+		return ModeShared
+	}
+	return m.Mode
+}
+
+// Guard is the git protection switch of this sandbox (see gitguard.Guard).
+func (m Meta) Guard() gitguard.Guard { return gitguard.Guard{Clone: m.IsClone()} }
 
 // Store keeps sandbox state under <state>/sandboxes/<name>.
 type Store struct {
-	Root      string // <state>/sandboxes
-	ConfigDir string // global config directory
+	Root       string // <state>/sandboxes
+	ClonesRoot string // <state>/clones, a sibling of Root: the proxy mounts only <Root>/<name>
+	ConfigDir  string // global config directory
 }
 
 var validName = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,62}$`)
@@ -90,7 +117,13 @@ func (s Store) Load(name string) (Meta, error) {
 	if err != nil {
 		return m, err
 	}
-	return m, json.Unmarshal(b, &m)
+	if err := json.Unmarshal(b, &m); err != nil {
+		return m, err
+	}
+	if m.Mode != "" && m.Mode != ModeShared && m.Mode != ModeClone {
+		return Meta{}, fmt.Errorf("sandbox %s has unknown mode %q", name, m.Mode)
+	}
+	return m, nil
 }
 
 // Save writes a sandbox record and its directories.
@@ -108,6 +141,44 @@ func (s Store) Save(m Meta) error {
 // Remove deletes a sandbox's state directory.
 func (s Store) Remove(name string) error {
 	return os.RemoveAll(s.Dir(name))
+}
+
+// CloneDir is where a sandbox's clone lives: outside the sandbox's own
+// state directory, so removing the sandbox keeps it. Empty without ClonesRoot.
+func (s Store) CloneDir(name string) string {
+	if s.ClonesRoot == "" {
+		return ""
+	}
+	return filepath.Join(s.ClonesRoot, name)
+}
+
+// Source is the host directory mounted in the agent and read by podbox: the
+// clone for a clone sandbox, the project otherwise. Meta.Workspace stays the
+// project path (labels, container path, agent view).
+func (s Store) Source(m Meta) string {
+	if m.IsClone() {
+		return s.CloneDir(m.Name)
+	}
+	return m.Workspace
+}
+
+// HasClone reports an existing clone directory.
+func (s Store) HasClone(name string) bool {
+	d := s.CloneDir(name)
+	if d == "" {
+		return false
+	}
+	fi, err := os.Lstat(d)
+	return err == nil && fi.IsDir()
+}
+
+// RemoveClone deletes a sandbox's clone.
+func (s Store) RemoveClone(name string) error {
+	d := s.CloneDir(name)
+	if d == "" {
+		return nil
+	}
+	return os.RemoveAll(d)
 }
 
 // Sources lists the policy layers of a sandbox.

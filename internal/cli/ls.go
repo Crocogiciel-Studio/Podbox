@@ -52,9 +52,9 @@ func (a *app) lsCmd() *cobra.Command {
 			}
 			return a.out.Print(list, func(w io.Writer) {
 				tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-				fmt.Fprintln(tw, "NAME\tAGENT\tSTATE\tPROXY\tWORKSPACE")
+				fmt.Fprintln(tw, "NAME\tAGENT\tMODE\tSTATE\tPROXY\tWORKSPACE")
 				for _, s := range list {
-					fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.Name, s.Agent, s.State, s.Proxy, s.Workspace)
+					fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Name, s.Agent, s.Mode, s.State, s.Proxy, s.Workspace)
 				}
 				tw.Flush()
 			})

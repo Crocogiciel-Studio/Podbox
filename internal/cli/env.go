@@ -18,7 +18,7 @@ func (a *app) store() (sandbox.Store, config.Paths, error) {
 	if err != nil {
 		return sandbox.Store{}, p, output.Wrap(output.ExitGeneric, err, "resolve directories")
 	}
-	return sandbox.Store{Root: filepath.Join(p.State, "sandboxes"), ConfigDir: p.Config}, p, nil
+	return sandbox.Store{Root: filepath.Join(p.State, "sandboxes"), ClonesRoot: filepath.Join(p.State, "clones"), ConfigDir: p.Config}, p, nil
 }
 
 type engine struct {

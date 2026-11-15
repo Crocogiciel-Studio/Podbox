@@ -22,9 +22,13 @@ func (s Store) gitPrintPath(name string) string {
 
 // RecordGit (re)records the fingerprint of the workspace's .git.
 func (s Store) RecordGit(m Meta) error {
-	p, err := gitguard.Fingerprint(m.Workspace)
+	src := s.Source(m)
+	p, err := m.Guard().Record(src)
 	if err != nil {
-		return fmt.Errorf("fingerprint %s/.git: %w", m.Workspace, err)
+		return fmt.Errorf("fingerprint %s/.git: %w", src, err)
+	}
+	if p == nil {
+		return nil // clone: nothing to protect
 	}
 	b, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
@@ -53,5 +57,5 @@ func (s Store) CheckGit(m Meta) (*gitguard.Integrity, error) {
 	if err := json.Unmarshal(b, &old); err != nil {
 		return nil, fmt.Errorf("git fingerprint of %s: %w", m.Name, err)
 	}
-	return gitguard.Check(m.Workspace, old)
+	return m.Guard().Check(s.Source(m), old)
 }

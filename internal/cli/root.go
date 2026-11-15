@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/hostgit"
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
@@ -63,6 +64,12 @@ func classify(err error, started bool) error {
 		code = output.ExitMasks
 	case errors.Is(err, workspace.ErrUnsafe), errors.Is(err, policy.ErrInvalid), errors.Is(err, sandbox.ErrBadWorkspace):
 		code = output.ExitUsage
+	case errors.Is(err, hostgit.ErrMissing), errors.Is(err, hostgit.ErrTooOld):
+		code = output.ExitPrereq
+	case errors.Is(err, hostgit.ErrNotRepo), errors.Is(err, hostgit.ErrNotTopLevel), errors.Is(err, hostgit.ErrEmptyRepo):
+		code = output.ExitUsage
+	case errors.Is(err, sandbox.ErrCloneExists), errors.Is(err, sandbox.ErrModeMismatch):
+		code = output.ExitGeneric
 	case errors.As(err, &cmdErr), errors.As(err, &pathErr), errors.As(err, &linkErr), errors.As(err, &sysErr):
 		code = output.ExitRuntime // podman or a host file operation failed
 	}

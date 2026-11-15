@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Crocogiciel-Studio/podbox/internal/agents"
 	"github.com/Crocogiciel-Studio/podbox/internal/config"
 	"github.com/Crocogiciel-Studio/podbox/internal/gitguard"
+	"github.com/Crocogiciel-Studio/podbox/internal/hostgit"
 	"github.com/Crocogiciel-Studio/podbox/internal/images"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
@@ -53,6 +55,8 @@ type Status struct {
 	Proxy     string `json:"proxy"` // proxy container state, or "missing"
 	Image     string `json:"image,omitempty"`
 	StateDir  bool   `json:"state_dir"`
+	Mode      string `json:"mode"`            // shared or clone
+	Clone     string `json:"clone,omitempty"` // host path of a clone sandbox's clone
 	// ProjectChanged lists project files edited since the last snapshot.
 	ProjectChanged []string `json:"project_changed,omitempty"`
 	// GitIntegrity compares the workspace's .git with its fingerprint.
@@ -67,89 +71,106 @@ type Imported struct {
 }
 
 // Create builds images if needed and creates the sandbox's objects.
-func (m *Manager) Create(ctx context.Context, name, agentName, ws string) (meta Meta, imp Imported, err error) {
+func (m *Manager) Create(ctx context.Context, name, agentName, ws string, opt CreateOptions) (meta Meta, imp Imported, report *CloneReport, err error) {
 	if err := ValidateName(name); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	ag, err := agents.Get(agentName)
 	if err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	if ws, err = filepath.Abs(ws); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	if fi, err := os.Stat(ws); err != nil || !fi.IsDir() {
-		return meta, imp, fmt.Errorf("%w: %s", ErrBadWorkspace, ws)
+		return meta, imp, report, fmt.Errorf("%w: %s", ErrBadWorkspace, ws)
 	}
 	if err := workspace.CheckRoot(ws, m.Home, m.Owned); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	r, err := workspace.OpenRoot(ws) // fail before anything is made
 	if err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	r.Close()
 	if _, err := m.Store.Load(name); err == nil {
-		return meta, imp, fmt.Errorf("%w: %s", ErrExists, name)
+		return meta, imp, report, fmt.Errorf("%w: %s", ErrExists, name)
 	}
 	if cs, err := m.RT.ContainerList(ctx, LabelSandbox+"="+name); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	} else if len(cs) > 0 {
-		return meta, imp, fmt.Errorf("%w: %s (podman objects left over; run podbox rm %s)", ErrExists, name, name)
+		return meta, imp, report, fmt.Errorf("%w: %s (podman objects left over; run podbox rm %s)", ErrExists, name, name)
+	}
+	if err := m.Store.cloneExists(name); err != nil { // before anything is made
+		return meta, imp, report, err
+	}
+	var repo hostgit.Repo
+	if opt.Clone {
+		if repo, err = m.checkClone(ctx, ws); err != nil {
+			return meta, imp, report, err
+		}
 	}
 	if ag.Experimental {
 		m.Warn("agent %s is experimental: its image and flags are unverified", ag.Name)
 	}
 	if _, err := m.Images.Ensure(ctx, images.Proxy, false); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	if _, err := m.Images.Ensure(ctx, ag.Image, false); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 
 	meta = Meta{Name: name, Agent: ag.Name, Workspace: ws, Created: time.Now().UTC()}
+	if opt.Clone {
+		meta.Mode, meta.Base = ModeClone, repo.Head
+	}
 	defer func() {
-		if err != nil {
-			_ = m.Remove(context.WithoutCancel(ctx), name, false)
+		if err != nil { // the clone, if any, was made by this call: the name had none
+			_, _ = m.remove(context.WithoutCancel(ctx), name, false, true)
 		}
 	}()
 	if err = m.Store.Save(meta); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
+	}
+	if opt.Clone {
+		if report, err = m.makeClone(ctx, meta, repo); err != nil {
+			return meta, imp, report, err
+		}
 	}
 	c, err := m.Store.Snapshot(meta)
 	if err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	for _, w := range c.Warnings {
 		m.Warn("%s", w)
 	}
 	imp = Imported{Rules: c.RulesAdded, Ignore: c.IgnoreAdded}
 	if err = m.Store.RecordGit(meta); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	if err = m.refreshPolicy(meta); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	if _, err = ensureNetwork(ctx, m.RT, runtime.NetworkSpec{Name: EgressNetwork, Labels: map[string]string{LabelShared: "egress"}}); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	if _, err = ensureNetwork(ctx, m.RT, runtime.NetworkSpec{
 		Name: internalNetwork(name), Internal: true, DisableDNS: true, Labels: labels(meta, "network"),
 	}); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	if ok, verr := m.RT.VolumeExists(ctx, HomeVolume(ag.Name)); verr != nil {
-		return meta, imp, verr
+		return meta, imp, report, verr
 	} else if !ok {
 		if err = m.RT.VolumeCreate(ctx, HomeVolume(ag.Name), map[string]string{LabelHome: ag.Name}); err != nil {
-			return meta, imp, err
+			return meta, imp, report, err
 		}
 	}
 	if err = m.createProxy(ctx, meta); err != nil {
-		return meta, imp, err
+		return meta, imp, report, err
 	}
 	err = m.createAgent(ctx, meta)
-	return meta, imp, err
+	return meta, imp, report, err
 }
 
 func (m *Manager) refreshPolicy(meta Meta) error {
@@ -205,12 +226,14 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 	for _, w := range res.Warnings {
 		m.Warn("%s", w)
 	}
-	ws, err := workspace.OpenRoot(meta.Workspace)
+	src := m.Store.Source(meta)
+	ws, err := workspace.OpenRoot(src)
 	if err != nil {
 		return err
 	}
 	defer ws.Close()
-	if gitguard.IsPointer(ws) {
+	guard := meta.Guard()
+	if guard.Pointer(ws) {
 		m.Warn(".git is a file (worktree or submodule): the hooks and config of the git directory it points to are not protected from the agent")
 	}
 	var limits *runtime.Limits
@@ -227,10 +250,10 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 		return err
 	}
 	spec := agentSpec(agentInput{
-		Meta: meta, Image: ref, ProxyIP: ip, ReadOnly: readOnlyProject(ws), GitDir: gitguard.HasDir(ws), Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name), AgentDir: m.Store.AgentDir(meta.Name),
+		Meta: meta, Source: src, Image: ref, ProxyIP: ip, ReadOnly: readOnlyProject(ws, guard), GitDir: guard.GitDir(ws), Masks: res.Masks, EmptyDir: m.Store.EmptyDir(meta.Name), AgentDir: m.Store.AgentDir(meta.Name),
 		Limits: limits, SELinux: m.Info.SELinux, GOOS: m.GOOS,
 	})
-	if err := checkMounts(ws, meta.Workspace, spec.Mounts); err != nil {
+	if err := checkMounts(ws, src, spec.Mounts); err != nil {
 		return err
 	}
 	return m.RT.ContainerCreate(ctx, spec)
@@ -248,7 +271,10 @@ func (m *Manager) Start(ctx context.Context, name string) (err error) {
 	if err := workspace.CheckRoot(meta.Workspace, m.Home, m.Owned); err != nil {
 		return err
 	}
-	if !m.Store.HasGitPrint(name) { // sandboxes created before fingerprints existed
+	if meta.IsClone() && !m.Store.HasClone(name) {
+		return fmt.Errorf("the clone of %s is missing (%s): it was removed; run podbox rm %s and create the sandbox again", name, m.Store.CloneDir(name), name)
+	}
+	if !m.Store.HasGitPrint(name) { // sandboxes created before fingerprints existed; none for a clone
 		if err := m.Store.RecordGit(meta); err != nil {
 			return err
 		}
@@ -319,16 +345,22 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 	return nil
 }
 
-// Remove deletes every object of a sandbox; the agent home volume only
-// with volumes set.
-func (m *Manager) Remove(ctx context.Context, name string, volumes bool) error {
+// Remove deletes every object of a sandbox; the agent home volume and the
+// clone, which holds the agent's work, only with volumes set. It also finds
+// a clone left with no sandbox.
+func (m *Manager) Remove(ctx context.Context, name string, volumes bool) (Removed, error) {
+	return m.remove(ctx, name, volumes, volumes)
+}
+
+func (m *Manager) remove(ctx context.Context, name string, volumes, dropClone bool) (Removed, error) {
+	var rm Removed
 	st, err := m.status(ctx, name)
 	if err != nil {
-		return err
+		return rm, err
 	}
 	cs, err := m.RT.ContainerList(ctx, LabelSandbox+"="+name)
 	if err != nil {
-		return err
+		return rm, err
 	}
 	var errs []error
 	for _, c := range cs {
@@ -344,6 +376,14 @@ func (m *Manager) Remove(ctx context.Context, name string, volumes bool) error {
 		}
 	}
 	errs = append(errs, m.Store.Remove(name))
+	if st.Clone != "" {
+		rm.ClonePath = st.Clone
+		if dropClone {
+			errs = append(errs, m.Store.RemoveClone(name))
+		} else {
+			rm.CloneKept = true
+		}
+	}
 	if volumes && st.Agent != "" {
 		if err := m.RT.VolumeRemove(ctx, HomeVolume(st.Agent)); err != nil && !errors.Is(err, runtime.ErrNotFound) {
 			errs = append(errs, err)
@@ -354,7 +394,7 @@ func (m *Manager) Remove(ctx context.Context, name string, volumes bool) error {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	return rm, errors.Join(errs...)
 }
 
 // List reports every sandbox known to the engine or the state directory.
@@ -368,7 +408,7 @@ func (m *Manager) List(ctx context.Context) ([]Status, error) {
 		if s, ok := byName[n]; ok {
 			return s
 		}
-		s := &Status{Name: n, State: "missing", Proxy: "missing"}
+		s := &Status{Name: n, State: "missing", Proxy: "missing", Mode: ModeShared}
 		byName[n] = s
 		return s
 	}
@@ -388,8 +428,16 @@ func (m *Manager) List(ctx context.Context) ([]Status, error) {
 			}
 		}
 	}
+	if cl, err := os.ReadDir(m.Store.ClonesRoot); err == nil && m.Store.ClonesRoot != "" {
+		for _, e := range cl { // clones left with no sandbox
+			if e.IsDir() && !strings.HasSuffix(e.Name(), ".partial") && ValidateName(e.Name()) == nil {
+				get(e.Name())
+			}
+		}
+	}
 	out := make([]Status, 0, len(byName))
 	for _, s := range byName {
+		m.finish(s)
 		out = append(out, *s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -404,7 +452,7 @@ func (m *Manager) status(ctx context.Context, name string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	s := Status{Name: name, State: "missing", Proxy: "missing"}
+	s := Status{Name: name, State: "missing", Proxy: "missing", Mode: ModeShared}
 	found := false
 	for _, c := range cs {
 		if c.Labels[LabelSandbox] == name {
@@ -416,14 +464,29 @@ func (m *Manager) status(ctx context.Context, name string) (Status, error) {
 		s.addMeta(meta)
 		found = true
 	}
+	if m.Store.HasClone(name) {
+		found = true
+	}
 	if !found {
 		return Status{}, fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
+	m.finish(&s)
 	return s, nil
+}
+
+// finish sets the clone fields: a clone directory on disk makes the sandbox
+// a clone sandbox, whatever else is left of it.
+func (m *Manager) finish(s *Status) {
+	if m.Store.HasClone(s.Name) {
+		s.Mode, s.Clone = ModeClone, m.Store.CloneDir(s.Name)
+	}
 }
 
 func (s *Status) addContainer(c runtime.Container) {
 	s.Agent, s.Workspace = c.Labels[LabelAgent], c.Labels[LabelWorkspace]
+	if mode := c.Labels[LabelMode]; mode != "" {
+		s.Mode = mode
+	}
 	switch c.Labels[LabelRole] {
 	case "agent":
 		s.State, s.Image = c.State, c.Image
@@ -434,6 +497,7 @@ func (s *Status) addContainer(c runtime.Container) {
 
 func (s *Status) addMeta(meta Meta) {
 	s.StateDir = true
+	s.Mode = meta.ModeName()
 	if s.Agent == "" {
 		s.Agent, s.Workspace = meta.Agent, meta.Workspace
 	}
