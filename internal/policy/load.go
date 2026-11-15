@@ -165,18 +165,29 @@ func SetRule(path, host string, allow bool, ports []int) error {
 	return fsutil.WriteAtomic(path, out)
 }
 
+// ErrInvalid marks a rule or a layer file podbox refuses to edit: a bad
+// host pattern or port, or content that does not parse.
+var ErrInvalid = errors.New("invalid policy")
+
+// invalidError keeps the cause's message and matches ErrInvalid.
+type invalidError struct{ err error }
+
+func (e invalidError) Error() string   { return e.err.Error() }
+func (e invalidError) Unwrap() []error { return []error{ErrInvalid, e.err} }
+
 // EditRule returns layer content b (nil: empty) with exactly one rule for
-// host, limited to ports when given. Invalid content is never rewritten.
+// host, limited to ports when given. Invalid content is never rewritten;
+// its errors match ErrInvalid.
 func EditRule(b []byte, host string, allow bool, ports []int) ([]byte, error) {
 	if err := ValidatePattern(host); err != nil {
-		return nil, err
+		return nil, invalidError{err}
 	}
 	if err := ValidatePorts(ports); err != nil {
-		return nil, err
+		return nil, invalidError{err}
 	}
 	f, _, err := Parse(b)
 	if err != nil {
-		return nil, fmt.Errorf("invalid, fix it first: %w", err)
+		return nil, invalidError{fmt.Errorf("invalid, fix it first: %w", err)}
 	}
 	h := NormalizeHost(host)
 	kept := f.Rules[:0]

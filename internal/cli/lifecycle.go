@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,9 +11,7 @@ import (
 
 	"github.com/Crocogiciel-Studio/podbox/internal/gitguard"
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
-	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
-	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
 func (a *app) manager(ctx context.Context) (*sandbox.Manager, error) {
@@ -28,27 +25,6 @@ func (a *app) manager(ctx context.Context) (*sandbox.Manager, error) {
 		GOOS: goruntime.GOOS, Getenv: os.Getenv, Warn: a.out.Warn,
 		Home: home, Owned: e.paths.Owned(),
 	}, nil
-}
-
-// classify maps sandbox errors to exit codes.
-func classify(err error) error {
-	var typed *output.Error
-	var cmdErr *runtime.CommandError
-	switch {
-	case err == nil || errors.As(err, &typed):
-		return err
-	case errors.Is(err, sandbox.ErrNotFound):
-		return &output.Error{Code: output.ExitNotFound, Err: err}
-	case errors.Is(err, workspace.ErrMasks):
-		return &output.Error{Code: output.ExitMasks, Err: err}
-	case errors.Is(err, workspace.ErrUnsafe):
-		return &output.Error{Code: output.ExitUsage, Err: err}
-	case errors.Is(err, sandbox.ErrExists), errors.Is(err, sandbox.ErrNotRunning):
-		return &output.Error{Code: output.ExitGeneric, Err: err}
-	case errors.As(err, &cmdErr):
-		return &output.Error{Code: output.ExitRuntime, Err: err}
-	}
-	return err
 }
 
 type actionResult struct {
@@ -107,7 +83,7 @@ func (a *app) simple(use, short, action string, launch bool, do func(*sandbox.Ma
 				return err
 			}
 			if err := do(m, cmd.Context(), args[0]); err != nil {
-				return classify(err)
+				return err
 			}
 			info := ""
 			if launch {
@@ -131,7 +107,7 @@ func (a *app) lifecycleCmds() []*cobra.Command {
 			}
 			g := a.gitCheck(m, args[0]) // before the fingerprint is deleted
 			if err := m.Remove(cmd.Context(), args[0], volumes); err != nil {
-				return classify(err)
+				return err
 			}
 			return a.done(args[0], "removed", g, "")
 		},
@@ -157,7 +133,7 @@ func terminal() sandbox.IO {
 
 func exitWith(code int, err error) error {
 	if err != nil {
-		return classify(err)
+		return err
 	}
 	if code != 0 {
 		return output.ExitStatus(code)

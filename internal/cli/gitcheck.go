@@ -29,7 +29,7 @@ func (a *app) gitCheckCmd() *cobra.Command {
 			}
 			meta, err := m.Store.Load(args[0])
 			if err != nil {
-				return classify(err)
+				return err
 			}
 			if accept || !m.Store.HasGitPrint(meta.Name) { // never recorded: nothing to compare yet
 				if err := m.Store.RecordGit(meta); err != nil {

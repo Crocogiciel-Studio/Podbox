@@ -81,6 +81,11 @@ func (m *Manager) Create(ctx context.Context, name, agentName, ws string) (meta 
 	if err := workspace.CheckRoot(ws, m.Home, m.Owned); err != nil {
 		return meta, imp, err
 	}
+	r, err := workspace.OpenRoot(ws) // fail before anything is made
+	if err != nil {
+		return meta, imp, err
+	}
+	r.Close()
 	if _, err := m.Store.Load(name); err == nil {
 		return meta, imp, fmt.Errorf("%w: %s", ErrExists, name)
 	}
@@ -197,7 +202,7 @@ func (m *Manager) createAgent(ctx context.Context, meta Meta) error {
 	for _, w := range res.Warnings {
 		m.Warn("%s", w)
 	}
-	ws, err := os.OpenRoot(meta.Workspace)
+	ws, err := workspace.OpenRoot(meta.Workspace)
 	if err != nil {
 		return err
 	}
@@ -405,7 +410,7 @@ func (m *Manager) status(ctx context.Context, name string) (Status, error) {
 		found = true
 	}
 	if !found {
-		return Status{}, ErrNotFound
+		return Status{}, fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
 	return s, nil
 }

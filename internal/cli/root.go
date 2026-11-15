@@ -3,12 +3,17 @@ package cli
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
+	"github.com/Crocogiciel-Studio/podbox/internal/policy"
+	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
+	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
+	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
 type app struct {
@@ -30,15 +35,40 @@ func run(args []string) int {
 	if err == nil {
 		return output.ExitOK
 	}
-	var typed *output.Error
-	var status output.ExitStatus
 	if !a.started {
-		if !errors.As(err, &typed) && !errors.As(err, &status) {
-			err = &output.Error{Code: output.ExitUsage, Err: err}
-		}
 		a.out.Mode = modeFromArgs(args)
 	}
-	return a.out.PrintError(err)
+	return a.out.PrintError(classify(err, a.started))
+}
+
+// classify gives err its exit code from the sentinel or type it carries;
+// before a command body runs (cobra argument errors), untyped errors are
+// usage errors.
+func classify(err error, started bool) error {
+	var typed *output.Error
+	var status output.ExitStatus
+	var cmdErr *runtime.CommandError
+	var pathErr *fs.PathError
+	var linkErr *os.LinkError
+	var sysErr *os.SyscallError
+	code := output.ExitGeneric
+	switch {
+	case errors.As(err, &typed), errors.As(err, &status):
+		return err
+	case !started:
+		code = output.ExitUsage
+	case errors.Is(err, sandbox.ErrNotFound):
+		code = output.ExitNotFound
+	case errors.Is(err, workspace.ErrMasks):
+		code = output.ExitMasks
+	case errors.Is(err, workspace.ErrUnsafe), errors.Is(err, policy.ErrInvalid):
+		code = output.ExitUsage
+	case errors.Is(err, sandbox.ErrExists), errors.Is(err, sandbox.ErrNotRunning):
+		code = output.ExitGeneric
+	case errors.As(err, &cmdErr), errors.As(err, &pathErr), errors.As(err, &linkErr), errors.As(err, &sysErr):
+		code = output.ExitRuntime // podman or a host file operation failed
+	}
+	return &output.Error{Code: code, Err: err}
 }
 
 func (a *app) newRoot() *cobra.Command {

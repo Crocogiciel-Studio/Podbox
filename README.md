@@ -87,12 +87,12 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 | --- | --- |
 | 0 | success |
 | 1 | generic error (sandbox exists, sandbox not running, ...) |
-| 2 | usage error (bad flag, argument, agent or `--output` value, unsafe workspace) |
+| 2 | usage error (bad flag, argument, agent, `--output` value or policy rule, unsafe workspace) |
 | 3 | prerequisite missing (see `podbox doctor`) |
 | 4 | not found (sandbox) |
-| 5 | runtime error (podman failed) |
+| 5 | runtime error (podman or a host file operation failed, e.g. an unwritable state directory) |
 | 6 | `git-check` found suspicious `.git` changes |
-| 7 | masks cannot be verified: a workspace directory is unreadable (`create`, `start`, `policy reload`), a recorded masked path is missing or now a symbolic link (`start`; restore it or `policy reload --forget-missing`), or the mask resolution is internally inconsistent; see [workspace masking](docs/security-model.md#workspace-masking) |
+| 7 | masks cannot be verified: the workspace or one of its directories is unreadable (`create`, `start`, `policy reload`), a recorded masked path is missing or now a symbolic link (`start`; restore it or `policy reload --forget-missing`), or the mask resolution is internally inconsistent; see [workspace masking](docs/security-model.md#workspace-masking) |
 
 `exec`, `attach` and `run` exit with the inner command's code. A suspicious `.git` change only prints a warning on these and on `start`, `stop`, `rm` and `ls` (and adds `git_integrity` to their JSON); see [git directory integrity](docs/security-model.md#git-directory-integrity). With `--output json`, errors are printed on stdout as `{"error":{"code":<exit code>,"kind":"...","message":"..."}}`.
 

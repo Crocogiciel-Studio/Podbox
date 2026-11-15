@@ -74,7 +74,7 @@ func (s Store) Load(name string) (Meta, error) {
 	var m Meta
 	b, err := os.ReadFile(s.metaPath(name))
 	if errors.Is(err, fs.ErrNotExist) {
-		return m, ErrNotFound
+		return m, fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
 	if err != nil {
 		return m, err

@@ -97,7 +97,7 @@ var ErrMasks = errors.New("masks cannot be verified")
 // read after a chmod.
 func Resolve(root string, ignore []byte, tracked []Tracked) (Result, error) {
 	res := Result{Tracked: append([]Tracked(nil), tracked...)}
-	r, err := os.OpenRoot(root)
+	r, err := OpenRoot(root)
 	if err != nil {
 		return res, err
 	}
@@ -313,6 +313,16 @@ func (w *walked) verify(res Result) error {
 		}
 	}
 	return nil
+}
+
+// OpenRoot opens workspace root; a failure wraps ErrMasks, since no mask
+// can be resolved in a workspace podbox cannot read.
+func OpenRoot(root string) (*os.Root, error) {
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, walkError(root, ".", err)
+	}
+	return r, nil
 }
 
 func walkError(root, rel string, err error) error {

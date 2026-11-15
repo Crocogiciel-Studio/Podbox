@@ -24,7 +24,7 @@ func (a *app) policyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			m, err := a.loadMeta(st, args[0])
+			m, err := st.Load(args[0])
 			if err != nil {
 				return err
 			}
@@ -54,13 +54,13 @@ func (a *app) policyReloadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			m, err := a.loadMeta(st, args[0])
+			m, err := st.Load(args[0])
 			if err != nil {
 				return err
 			}
 			c, e, err := st.Reload(m, forgetMissing)
 			if err != nil {
-				return classify(err)
+				return err
 			}
 			if err := workspace.MissingError(m.Name, c.MasksMissing); err != nil {
 				c.Warnings = append(c.Warnings, "kept the missing mask records; "+err.Error())
@@ -110,7 +110,7 @@ func (a *app) policySetCmd(verb string, allow bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			m, err := a.loadMeta(st, args[0])
+			m, err := st.Load(args[0])
 			if err != nil {
 				return err
 			}
@@ -121,14 +121,14 @@ func (a *app) policySetCmd(verb string, allow bool) *cobra.Command {
 			case policy.LayerProject:
 				// The project file for the repository, the snapshot for enforcement.
 				if err := sandbox.SetProjectRule(m.Workspace, args[1], allow, ports); err != nil {
-					return output.Wrap(output.ExitUsage, err, verb)
+					return fmt.Errorf("%s: %w", verb, err)
 				}
 				path = st.ProjectPolicyPath(m.Name)
 			default:
 				return output.Errorf(output.ExitUsage, "invalid --scope %q: want session or project", scope)
 			}
 			if err := policy.SetRule(path, args[1], allow, ports); err != nil {
-				return output.Wrap(output.ExitUsage, err, verb)
+				return fmt.Errorf("%s: %w", verb, err)
 			}
 			e, err := st.RefreshPolicy(m)
 			if err != nil {

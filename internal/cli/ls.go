@@ -23,7 +23,7 @@ func (a *app) lsCmd() *cobra.Command {
 			}
 			list, err := m.List(cmd.Context())
 			if err != nil {
-				return classify(err)
+				return err
 			}
 			// Sandboxes sharing a workspace and its findings get one warning.
 			type group struct {

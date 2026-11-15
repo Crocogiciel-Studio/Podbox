@@ -60,7 +60,7 @@ func (a *app) createCmd() *cobra.Command {
 			}
 			_, imp, err := m.Create(cmd.Context(), name, agent, ws)
 			if err != nil {
-				return classify(err)
+				return err
 			}
 			a.printImported(name, imp)
 			return a.out.Print(actionResult{Name: name, Action: "created", Info: a.hookNotice(m, name), Imported: &imp},
@@ -87,10 +87,10 @@ func (a *app) runCmd() *cobra.Command {
 				return err
 			}
 			if err := a.ensureSandbox(cmd.Context(), m, name, agent, ws); err != nil {
-				return classify(err)
+				return err
 			}
 			if err := m.Start(cmd.Context(), name); err != nil {
-				return classify(err)
+				return err
 			}
 			a.hookNotice(m, name)
 			code, err := m.Attach(cmd.Context(), name, terminal())
