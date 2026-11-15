@@ -33,6 +33,10 @@ func TestResolve(t *testing.T) {
 	root := tree(t, map[string]string{
 		".env":                    "A=1",
 		".env.local":              "A=2",
+		".env.example":            "A=",
+		"api/.env.template":       "A=",
+		".env.example.local":      "A=3",
+		".envrc":                  "export A=4",
 		".ssh/id_x":               "k",
 		".git/hooks/pre-commit":   "#!/bin/sh",
 		".git/objects/ab":         "x",
@@ -58,7 +62,7 @@ func TestResolve(t *testing.T) {
 		}
 		got = append(got, s)
 	}
-	want := ".docker/config.json .env .env.local .ssh/ secrets/ src/server.pem" // .git: read-only binds, not masks
+	want := ".docker/config.json .env .env.example.local .env.local .envrc .ssh/ secrets/ src/server.pem" // .git: read-only binds, not masks; env templates visible
 	if strings.Join(got, " ") != want {
 		t.Fatalf("masks\n got %s\nwant %s", strings.Join(got, " "), want)
 	}

@@ -4,7 +4,7 @@ Run coding agents (Claude Code, Kiro) autonomously in a hardened rootless Podman
 
 - The agent container has no route out, no DNS, and no access to the host or its loopback services; its only exit is the sandbox proxy.
 - The proxy allows only listed hosts (deny by default) and answers refusals with a message the agent can read and relay.
-- The project is mounted read-write; secrets (`.env*`, keys, `.ssh/`, ...) are always hidden. `.git/config` and `.git/hooks/` are read-only (project hooks still run for the agent's commits); other `.git` changes that git on the host could execute, and edits to worktree hook files (`.husky/`, `lefthook.yml`, `.pre-commit-config.yaml`, `core.hooksPath`, ...), are reported after each session. Your home directory and podbox's own config/state directories are refused as workspaces.
+- The project is mounted read-write; secrets (`.env`, `.env.*` except templates such as `.env.example`, keys, `.ssh/`, ...) are always hidden. `.git/config` and `.git/hooks/` are read-only (project hooks still run for the agent's commits); other `.git` changes that git on the host could execute, and edits to worktree hook files (`.husky/`, `lefthook.yml`, `.pre-commit-config.yaml`, `core.hooksPath`, ...), are reported after each session. Your home directory and podbox's own config/state directories are refused as workspaces.
 - The agent login persists in a per-agent volume, never in your `$HOME`.
 
 Status: v0.1. See [security model](docs/security-model.md) and [policy reference](docs/policy.md).

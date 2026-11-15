@@ -15,8 +15,12 @@ import (
 )
 
 // Forced patterns are always masked; .sandboxignore cannot unmask them.
+// Env templates stay visible: they document the configuration the agent
+// works with and hold no secret by convention.
 var Forced = []string{
-	".env*", "*.pem", "*.key", "id_*",
+	".env", ".env.*", ".envrc",
+	"!.env.example", "!.env.sample", "!.env.template", "!.env.dist",
+	"*.pem", "*.key", "id_*",
 	".ssh/", ".aws/", ".kube/", ".gnupg/",
 	".npmrc", ".pypirc", ".netrc", ".git-credentials",
 	".docker/config.json",
