@@ -99,19 +99,15 @@ func isGitDir(r *os.Root, rel string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
-// skipWalk reports a directory of pure churn the fingerprint never reads,
+// skipWalk reports a directory of pure churn the fingerprint never walks,
 // rel being relative to .git (opened as g): git-lfs objects, and the object
 // store of .git or of a submodule git directory (loose objects and packs;
-// objects/info is watched).
+// its info directory is walked on its own).
 func skipWalk(g *os.Root, rel string) bool {
-	if rel == "lfs" {
+	if rel == "lfs" || rel == "objects" {
 		return true
 	}
-	store := path.Dir(rel)
-	if path.Base(rel) == "info" || path.Base(store) != "objects" {
-		return false
-	}
-	return store == "objects" || strings.HasPrefix(store, "modules/") && isGitDir(g, path.Dir(store))
+	return path.Base(rel) == "objects" && strings.HasPrefix(rel, "modules/") && isGitDir(g, path.Dir(rel))
 }
 
 // shallowLinks records the symbolic links directly inside dir (relative to
@@ -256,13 +252,17 @@ func fingerprintGitDir(r *os.Root) (Print, error) {
 	for _, e := range entries {
 		p.Entries = append(p.Entries, e.Name())
 	}
-	err = fs.WalkDir(gfs, ".", func(rel string, d fs.DirEntry, err error) error {
+	var visit fs.WalkDirFunc
+	visit = func(rel string, d fs.DirEntry, err error) error {
 		if err != nil || rel == "." {
 			return nil // unreadable entries are unreadable to host git too
 		}
 		if d.IsDir() && skipWalk(g, rel) {
 			shallowLinks(g, rel, p.Links)
 			shallowLinks(g, path.Join(rel, "pack"), p.Links)
+			if info := path.Join(rel, "info"); isDir(g, info) {
+				fs.WalkDir(gfs, info, visit)
+			}
 			return fs.SkipDir
 		}
 		if d.IsDir() && worktreeDir(g, rel) {
@@ -287,8 +287,15 @@ func fingerprintGitDir(r *os.Root) (Print, error) {
 			}
 		}
 		return nil
-	})
+	}
+	err = fs.WalkDir(gfs, ".", visit)
 	return p, err
+}
+
+// isDir reports a real directory at rel, never a symbolic link to one.
+func isDir(g *os.Root, rel string) bool {
+	fi, err := workspace.Lstat(g, rel)
+	return err == nil && fi.IsDir()
 }
 
 // pendingExec reports exec lines that `git rebase --continue` would run.
