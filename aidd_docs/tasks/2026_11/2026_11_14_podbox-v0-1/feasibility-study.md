@@ -1,60 +1,60 @@
-# Podman Agent Sandbox — spec & étude de faisabilité
+# Podman Agent Sandbox — spec & feasibility study
 
 Nov 14, 2026 · @Guillaume
 
-## Contexte et objectifs
+## Context and goals
 
-Objectif : une CLI open source qui reproduit l'expérience Docker Sandboxes (sbx) sur **Podman rootless**, pour faire tourner des coding agents en mode autonome (YOLO) sans risque pour le poste hôte. Elle doit pouvoir être utilisée seule, puis intégrée plus tard dans Sandy (l'ADE open source de l'auteur, aujourd'hui basé sur sbx), qui doit continuer à fonctionner avec les deux.
+Goal: an open-source CLI that reproduces the Docker Sandboxes (sbx) experience on **rootless Podman**, to run coding agents in autonomous mode (YOLO) without risk to the host machine. It must be usable on its own, then integrated later into Sandy (the author's open-source ADE, currently based on sbx), which must keep working with both.
 
-Nom de travail utilisé dans ce document : `podsbox` (à remplacer).
+Working name used in this document: `podsbox` (to be replaced).
 
-### Contraintes de l'environnement cible (entreprise)
+### Target environment constraints (enterprise)
 
-- Pas de compte Docker utilisable, donc pas de sbx ni de Docker Desktop.
-- Stack : Python, Java, TypeScript ; conteneurs **Podman** ; déploiements **Kubernetes** (possiblement OpenShift, à vérifier).
-- Coding agent principal de l'équipe : **Kiro** (IDE + CLI). Claude Code utilisé aussi.
-- Registry interne probable (Artifactory/Nexus) ; Docker Hub possiblement bloqué. Proxy d'entreprise possiblement en interception TLS.
-- Poste de travail : OS à confirmer (Linux, macOS ou Windows/WSL2).
+- No usable Docker account, so no sbx and no Docker Desktop.
+- Stack: Python, Java, TypeScript; **Podman** containers; **Kubernetes** deployments (possibly OpenShift, to be checked).
+- The team's main coding agent: **Kiro** (IDE + CLI). Claude Code is used too.
+- Likely internal registry (Artifactory/Nexus); Docker Hub possibly blocked. Corporate proxy possibly doing TLS interception.
+- Workstation: OS to be confirmed (Linux, macOS or Windows/WSL2).
 
-### Features demandées
+### Requested features
 
-1. Proxy qui injecte les secrets (l'agent ne voit jamais les vraies clés).
-2. Politique réseau (allowlist, deny par défaut), avec **approbation interactive intégrée au flux de l'agent**.
-3. Montage du répertoire projet en mode **partagé** ou **isolé** (équivalent `--clone` de sbx), avec **diff et export** du travail de l'agent.
-4. Fichier d'exclusion type `.sandboxignore` pour ne jamais exposer `.env`, clés, etc.
-5. Kits : connecter des MCP, installer des skills, composer des environnements (comme les kits sbx).
+1. A proxy that injects secrets (the agent never sees the real keys).
+2. Network policy (allowlist, deny by default), with **interactive approval built into the agent's flow**.
+3. Mounting the project directory in **shared** or **isolated** mode (equivalent of sbx `--clone`), with **diff and export** of the agent's work.
+4. An exclusion file like `.sandboxignore` so that `.env`, keys, etc. are never exposed.
+5. Kits: connect MCPs, install skills, compose environments (like sbx kits).
 
-### Non-objectifs (v1)
+### Non-goals (v1)
 
-- Pas d'isolation microVM au départ (backend optionnel plus tard).
-- Pas de backend Kubernetes au départ.
-- Pas de gestion OAuth par le proxy au départ (clés API uniquement).
+- No microVM isolation at first (optional backend later).
+- No Kubernetes backend at first.
+- No OAuth handling by the proxy at first (API keys only).
 
-## Architecture cible
+## Target architecture
 
-Deux repos : la **CLI de sandboxing** (ce projet, open source, autonome) et **Sandy**, qui la consomme via une interface de provider. La logique « ADE » (diff, revue, UI d'approbation) vit dans Sandy ; la CLI reste un moteur.
+Two repos: the **sandboxing CLI** (this project, open source, standalone) and **Sandy**, which consumes it through a provider interface. The "ADE" logic (diff, review, approval UI) lives in Sandy; the CLI stays an engine.
 
-&#91;embedded content: architecture d'une sandbox · agent, proxy, CLI hôte\]
+&#91;embedded content: sandbox architecture · agent, proxy, host CLI\]
 
-L'agent n'a qu'une sortie : le proxy, seul conteneur sur les deux réseaux. Les décisions passent par l'API de contrôle, joignable uniquement depuis l'hôte.
+The agent has only one way out: the proxy, the only container on both networks. Decisions go through the control API, reachable only from the host.
 
-### Composants par sandbox
+### Per-sandbox components
 
-- **Conteneur agent** : rootless, sur un réseau Podman `--internal` (aucune route vers l'extérieur), workspace monté, aucun secret réel.
-- **Conteneur proxy** (un par sandbox) : seul conteneur sur deux réseaux (interne + egress). Data plane = allowlist, injection de secrets, logs. Control plane = API locale accessible **uniquement depuis l'hôte** (socket unix).
-- **Résolveur DNS** filtré (sinkhole des domaines non autorisés), intégré au proxy ou en sidecar.
-- **MCP `sandbox-control`** dans le conteneur agent : permet à l'agent de lire la politique et de demander un accès (jamais d'approuver).
-- **CLI hôte** : cycle de vie, secrets (keychain OS), politique, flux d'événements JSON pour Sandy.
+- **Agent container**: rootless, on a Podman `--internal` network (no route to the outside), workspace mounted, no real secrets.
+- **Proxy container** (one per sandbox): the only container on two networks (internal + egress). Data plane = allowlist, secret injection, logs. Control plane = local API reachable **only from the host** (unix socket).
+- Filtered **DNS resolver** (sinkholing unauthorized domains), built into the proxy or as a sidecar.
+- **`sandbox-control` MCP** in the agent container: lets the agent read the policy and request access (never approve).
+- **Host CLI**: lifecycle, secrets (OS keychain), policy, JSON event stream for Sandy.
 
-### Choix techniques
+### Technical choices
 
-- **Langage : Go.** Bindings Podman, client-go pour un futur backend K8s, binaire unique, bonnes libs de proxy (goproxy, martian). Utilisable aussi comme librairie par Sandy.
-- **Runtime pluggable dès le départ** (interface `Runtime`) : `podman` (v1), `podman --runtime krun` / Kata (microVM, plus tard), `k8s` (plus tard). L'écart d'isolation avec sbx devient une option, pas une limite du produit.
-- **API Podman** via le socket (compatible Docker) : permet potentiellement de supporter Docker Engine rootless à moindre coût.
-- **Surface CLI calquée sur sbx** (`run`, `exec`, `cp`, `ls`, `rm`, `policy`, `secret`, `kit`) pour que l'adapter Sandy soit quasi identique entre les deux providers.
-- **`--output json` sur toutes les commandes** dès la v0.1.
+- **Language: Go.** Podman bindings, client-go for a future K8s backend, single binary, good proxy libs (goproxy, martian). Also usable as a library by Sandy.
+- **Pluggable runtime from the start** (`Runtime` interface): `podman` (v1), `podman --runtime krun` / Kata (microVM, later), `k8s` (later). The isolation gap with sbx becomes an option, not a product limitation.
+- **Podman API** via the socket (Docker-compatible): potentially allows supporting rootless Docker Engine at low cost.
+- **CLI surface modeled on sbx** (`run`, `exec`, `cp`, `ls`, `rm`, `policy`, `secret`, `kit`) so that the Sandy adapter is nearly identical between the two providers.
+- **`--output json` on every command** from v0.1.
 
-### Contrat avec Sandy (à figer tôt)
+### Contract with Sandy (to freeze early)
 
 ```
 SandboxProvider
@@ -62,83 +62,83 @@ SandboxProvider
   exec / attach (PTY)
   cp in/out, ports, logs
   policy (get / allow / deny / watch events), secrets
-  (diff/export : implémentés côté Sandy via exec + cp)
+  (diff/export: implemented on the Sandy side via exec + cp)
 ├── SbxProvider     → sbx CLI
-└── PodsboxProvider → cette CLI (ou sa lib Go)
+└── PodsboxProvider → this CLI (or its Go lib)
 ```
 
-Recommandation : écrire l'interface et le `SbxProvider` en premier dans Sandy ; la CLI n'a plus qu'à remplir le même contrat.
+Recommendation: write the interface and the `SbxProvider` first in Sandy; the CLI then only has to fulfill the same contract.
 
-## Modèle d'isolation
+## Isolation model
 
-Podman rootless isole l'agent entier avec ses propres namespaces, mais partage le noyau de l'hôte : c'est moins fort qu'une microVM sbx, et très au-dessus d'un agent lancé directement sur le poste. Les sandboxes natives des agents (Kiro `/sandbox`, Claude Code `/sandbox`) ne sont que des garde-fous : elles restreignent les commandes lancées par l'agent, pas l'agent lui-même.
+Rootless Podman isolates the whole agent with its own namespaces, but shares the host kernel: it is weaker than an sbx microVM, and far above an agent run directly on the workstation. The agents' native sandboxes (Kiro `/sandbox`, Claude Code `/sandbox`) are only guardrails: they restrict the commands the agent launches, not the agent itself.
 
-| Niveau | Noyau | Agent entier isolé | Verdict |
+| Level | Kernel | Whole agent isolated | Verdict |
 | --- | --- | --- | --- |
-| Sandbox native Kiro / Claude Code (bubblewrap, Seatbelt, AppContainer) | hôte | non, seulement ses commandes ; les outils fichiers intégrés restent hors sandbox | garde-fou complémentaire |
-| Podman rootless (v1) | partagé | oui | bon |
-| Pod K8s durci | partagé avec le nœud | oui | bon, si bien configuré |
-| Pod gVisor | noyau en espace utilisateur | oui | très bon |
-| Podman `--runtime krun` / Kata | microVM, noyau propre | oui | équivalent sbx |
+| Kiro / Claude Code native sandbox (bubblewrap, Seatbelt, AppContainer) | host | no, only its commands; the built-in file tools stay outside the sandbox | complementary guardrail |
+| Rootless Podman (v1) | shared | yes | good |
+| Hardened K8s pod | shared with the node | yes | good, if well configured |
+| gVisor pod | user-space kernel | yes | very good |
+| Podman `--runtime krun` / Kata | microVM, own kernel | yes | equivalent to sbx |
 
-### Durcissement par défaut du conteneur agent
+### Default hardening of the agent container
 
-- Rootless, `--userns=keep-id`, utilisateur non root dans l'image.
-- `--cap-drop=ALL`, `--security-opt no-new-privileges`, seccomp par défaut.
-- Jamais `--privileged` à part de rares cas en rootless. Jamais de socket Podman ou Docker monté.
-- Aucun montage hôte hors workspace et volumes d'état de l'agent. Refuser les dot-dirs du `$HOME` (`.ssh`, `.aws`, `.kube`, `.config`…).
-- Limites CPU, RAM, PIDs.
-- Réseau `--internal` : aucune route directe vers Internet ni vers les services loopback de l'hôte.
-- Rootfs en lecture seule quand c'est possible, avec tmpfs pour `/tmp`.
+- Rootless, `--userns=keep-id`, non-root user in the image.
+- `--cap-drop=ALL`, `--security-opt no-new-privileges`, default seccomp.
+- Never `--privileged` except in rare rootless cases. Never a mounted Podman or Docker socket.
+- No host mounts besides the workspace and the agent's state volumes. Refuse `$HOME` dot-dirs (`.ssh`, `.aws`, `.kube`, `.config`…).
+- CPU, RAM, PID limits.
+- `--internal` network: no direct route to the Internet or to the host's loopback services.
+- Read-only rootfs when possible, with tmpfs for `/tmp`.
 
-### Pourquoi jamais de conteneur privilégié rootful
+### Why never a rootful privileged container
 
-`--privileged` donne toutes les capabilities, désactive seccomp et AppArmor/SELinux et expose les devices de l'hôte : en rootful, c'est équivalent à root sur la machine (montage du disque hôte, modules noyau). En K8s, s'y ajoutent les tokens de service account, les credentials du kubelet et les secrets des autres pods du nœud. En **rootless**, le user namespace limite `--privileged` aux droits de l'utilisateur, ce qui rend possible Podman-in-Podman (Testcontainers) sans ouvrir l'hôte.
+`--privileged` grants all capabilities, disables seccomp and AppArmor/SELinux and exposes the host's devices: in rootful mode, this is equivalent to root on the machine (mounting the host disk, kernel modules). In K8s, add service account tokens, kubelet credentials and the secrets of other pods on the node. In **rootless** mode, the user namespace limits `--privileged` to the user's rights, which makes Podman-in-Podman (Testcontainers) possible without opening up the host.
 
-### Backend Kubernetes (plus tard)
+### Kubernetes backend (later)
 
-- Pod durci : `automountServiceAccountToken: false`, `runAsNonRoot`, `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, limites de ressources, namespace dédié sans secrets, pas de `hostPath`.
-- NetworkPolicy deny-all en egress, sauf vers le **pod proxy** et le DNS. Attention : une NetworkPolicy s'applique au pod entier, donc **un sidecar proxy dans le même pod ne peut pas être le seul à sortir**. Proxy = pod séparé (recommandé), ou sidecar avec redirection iptables par UID (exige `NET_ADMIN` dans un init container).
-- Bloquer l'endpoint de métadonnées cloud (`169.254.169.254`).
-- Isolation renforcée : `RuntimeClass` gVisor ou Kata si la plateforme les fournit.
-- Pour donner un cluster à l'agent : **vcluster** (cluster virtuel dans un namespace, sans privilèges), plutôt que kind/k3d qui exigent un pod privilégié.
+- Hardened pod: `automountServiceAccountToken: false`, `runAsNonRoot`, `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, resource limits, dedicated namespace without secrets, no `hostPath`.
+- Deny-all egress NetworkPolicy, except towards the **proxy pod** and DNS. Caution: a NetworkPolicy applies to the whole pod, so **a proxy sidecar in the same pod cannot be the only one allowed out**. Proxy = separate pod (recommended), or sidecar with iptables redirection by UID (requires `NET_ADMIN` in an init container).
+- Block the cloud metadata endpoint (`169.254.169.254`).
+- Stronger isolation: gVisor or Kata `RuntimeClass` if the platform provides them.
+- To give the agent a cluster: **vcluster** (virtual cluster in a namespace, without privileges), rather than kind/k3d which require a privileged pod.
 
-## Proxy d'egress et injection de secrets
+## Egress proxy and secret injection
 
-Même modèle que sbx : un proxy HTTPS avec interception TLS, dont la CA est cuite dans l'image de l'agent, remplace des valeurs sentinelles par les vrais secrets, uniquement pour les hosts autorisés. L'agent ne voit que des placeholders.
+Same model as sbx: an HTTPS proxy with TLS interception, whose CA is baked into the agent image, replaces sentinel values with the real secrets, only for authorized hosts. The agent only sees placeholders.
 
-### Règles non négociables
+### Non-negotiable rules
 
-1. L'agent n'a **aucune route directe** vers l'extérieur (réseau `--internal`). Sans ça, le proxy est contournable.
-2. Les secrets réels n'existent **que dans le proxy** (keychain OS côté hôte → Podman secret monté dans le seul conteneur proxy).
-3. Injection **par host de destination** : une clé GitLab ne part que vers GitLab.
-4. Le control plane (approbation, modification de politique) n'est **jamais joignable depuis la sandbox**.
+1. The agent has **no direct route** to the outside (`--internal` network). Without this, the proxy can be bypassed.
+2. Real secrets exist **only in the proxy** (OS keychain on the host side → Podman secret mounted in the proxy container only).
+3. Injection **per destination host**: a GitLab key only goes to GitLab.
+4. The control plane (approval, policy changes) is **never reachable from the sandbox**.
 
-### Deux modes d'injection
+### Two injection modes
 
-| Mode | Fonctionnement | Avantages | Contraintes |
+| Mode | How it works | Advantages | Constraints |
 | --- | --- | --- | --- |
-| A. Forward proxy avec interception TLS | `HTTPS_PROXY=http://proxy:8080` ; le proxy présente un certificat signé par sa CA, déchiffre, injecte, rechiffre | marche pour tous les outils sans reconfiguration | la CA doit être acceptée par tous les trust stores ; impossible avec le certificate pinning |
-| B. Reverse proxy | l'outil pointe sur `http://proxy:8080/<service>` (ex. `ANTHROPIC_BASE_URL`, mirror Maven, `index-url` pip) ; le proxy ouvre la vraie connexion HTTPS | pas de CA à distribuer | seulement pour les outils dont l'URL de base est configurable |
+| A. Forward proxy with TLS interception | `HTTPS_PROXY=http://proxy:8080`; the proxy presents a certificate signed by its CA, decrypts, injects, re-encrypts | works for all tools without reconfiguration | the CA must be accepted by every trust store; impossible with certificate pinning |
+| B. Reverse proxy | the tool points to `http://proxy:8080/<service>` (e.g. `ANTHROPIC_BASE_URL`, Maven mirror, pip `index-url`); the proxy opens the real HTTPS connection | no CA to distribute | only for tools whose base URL is configurable |
 
-En pratique : B pour les registries de paquets et les API LLM, A pour le reste.
+In practice: B for package registries and LLM APIs, A for the rest.
 
-### Pourquoi la CA est le point délicat
+### Why the CA is the tricky part
 
-Pour ajouter un header dans une requête HTTPS, le proxy doit la déchiffrer, donc se faire passer pour le serveur avec un certificat signé par sa propre CA. Chaque écosystème a son trust store :
+To add a header to an HTTPS request, the proxy has to decrypt it, and so impersonate the server with a certificate signed by its own CA. Each ecosystem has its own trust store:
 
-| Outil | Trust store | Réglage |
+| Tool | Trust store | Setting |
 | --- | --- | --- |
-| curl, git, la plupart des binaires | système | `update-ca-certificates` / `update-ca-trust` |
+| curl, git, most binaries | system | `update-ca-certificates` / `update-ca-trust` |
 | Python (requests, pip) | certifi | `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE` |
-| Node, npm | interne | `NODE_EXTRA_CA_CERTS` |
-| Java, Maven, Gradle | `cacerts` de la JVM | `keytool -importcert -cacerts` (sur RHEL/UBI, `update-ca-trust` le met souvent à jour) |
-| Java (proxy) | ignore `HTTPS_PROXY` | `JAVA_TOOL_OPTIONS=-Dhttps.proxyHost=… -Dhttps.proxyPort=…` |
-| Conteneurs lancés dans la sandbox | leurs propres trust stores | installer la CA dans les images de build |
+| Node, npm | internal | `NODE_EXTRA_CA_CERTS` |
+| Java, Maven, Gradle | JVM `cacerts` | `keytool -importcert -cacerts` (on RHEL/UBI, `update-ca-trust` often updates it) |
+| Java (proxy) | ignores `HTTPS_PROXY` | `JAVA_TOOL_OPTIONS=-Dhttps.proxyHost=… -Dhttps.proxyPort=…` |
+| Containers launched in the sandbox | their own trust stores | install the CA in the build images |
 
-C'est un coût payé une fois dans l'image de base (section Images, kits). Recommandation : **une CA éphémère par sandbox** (comme Modal, Cloudflare, Lens), ou au minimum une CA dédiée dont la clé privée reste dans le seul proxy.
+This is a cost paid once in the base image (Images, kits section). Recommendation: **one ephemeral CA per sandbox** (like Modal, Cloudflare, Lens), or at minimum a dedicated CA whose private key stays only in the proxy.
 
-### Implantation de référence (prototype Podman)
+### Reference implementation (Podman prototype)
 
 ```bash
 podman network create --internal sbx-internal
@@ -158,7 +158,7 @@ podman run -it --rm --network sbx-internal --userns=keep-id \
   sbx/claude:polyglot
 ```
 
-Addon mitmproxy minimal (prototype ; la version finale peut être réécrite en Go) :
+Minimal mitmproxy addon (prototype; the final version may be rewritten in Go):
 
 ```python
 import os
@@ -168,7 +168,7 @@ INJECT = {"api.anthropic.com": ("x-api-key", os.environ["ANTHROPIC_API_KEY"])}
 ALLOW = set(INJECT) | {"pypi.org", "files.pythonhosted.org"}
 
 def http_connect(flow: http.HTTPFlow):
-    if flow.request.pretty_host not in ALLOW:  # bloque avant le TLS
+    if flow.request.pretty_host not in ALLOW:  # block before TLS
         flow.response = http.Response.make(403, b"blocked by sandbox proxy")
 
 def request(flow: http.HTTPFlow):
@@ -178,23 +178,23 @@ def request(flow: http.HTTPFlow):
         flow.request.headers[header] = value
 ```
 
-### Améliorations à prévoir
+### Planned improvements
 
-- **Rediriger les réponses** : remplacer tout secret réel renvoyé par l'upstream par son placeholder (fait par agentcage).
-- **Placeholders aléatoires et rotatifs** plutôt qu'une chaîne fixe.
-- **Chaînage vers le proxy d'entreprise** (`--mode upstream:…`) : c'est le conteneur proxy qui fait confiance à la CA d'entreprise, l'agent ne connaît que la CA de la sandbox.
-- **Git** : HTTPS avec token injecté (le SSH ne passe pas par un proxy HTTP).
-- **OAuth** (Claude Code avec abonnement, Kiro en SSO) : tokens rafraîchis, donc interception du flux de refresh agent par agent. Hors v1 : le token OAuth vit dans un volume dédié de la sandbox, avec des droits et une durée de vie minimaux.
+- **Redact responses**: replace any real secret returned by the upstream with its placeholder (done by agentcage).
+- **Random, rotating placeholders** rather than a fixed string.
+- **Chaining to the corporate proxy** (`--mode upstream:…`): the proxy container is the one that trusts the corporate CA; the agent only knows the sandbox CA.
+- **Git**: HTTPS with an injected token (SSH does not go through an HTTP proxy).
+- **OAuth** (Claude Code with a subscription, Kiro with SSO): refreshed tokens, hence intercepting the refresh flow agent by agent. Out of v1: the OAuth token lives in a dedicated sandbox volume, with minimal rights and lifetime.
 
-## Politique réseau et approbation interactive
+## Network policy and interactive approval
 
-Différenciateur clé face à sbx : l'agent sait qu'il est dans une sandbox avec une politique réseau, et demande un accès **dans son propre flux** ; un humain décide, jamais l'agent.
+Key differentiator versus sbx: the agent knows it is in a sandbox with a network policy, and requests access **within its own flow**; a human decides, never the agent.
 
-### Modèle de politique
+### Policy model
 
-Couches du général au particulier, un deny l'emporte toujours :
+Layers from general to specific; a deny always wins:
 
-`défauts globaux → kit → projet (.sandy/policy.yaml, versionné) → grants de session`
+`global defaults → kit → project (.sandy/policy.yaml, versioned) → session grants`
 
 ```yaml
 mode: ask            # strict | ask | learn
@@ -207,120 +207,120 @@ rules:
     inject: { header: x-api-key, secret: anthropic }
   - host: "gitlab.example.internal"
     allow: true
-    methods: [GET, POST]          # règles fines optionnelles : méthode, chemin, query
+    methods: [GET, POST]          # optional fine-grained rules: method, path, query
     paths: ["/api/v4/projects/123/"]
   - host: "*.pastebin.com"
-    allow: false     # deny explicite : jamais de demande
+    allow: false     # explicit deny: never a request
 approval:
   hold_timeout: 30s
-  scopes: [once, session, project]   # "project" réécrit policy.yaml
+  scopes: [once, session, project]   # "project" rewrites policy.yaml
 ```
 
-| Mode | Comportement | Usage |
+| Mode | Behavior | Use |
 | --- | --- | --- |
-| `strict` | tout ce qui n'est pas autorisé est refusé, sans question | CI, tâches autonomes |
-| `ask` | requête inconnue mise en attente, événement émis, décision humaine | travail interactif (Sandy, TUI) |
-| `learn` | tout passe et tout est logué ; en fin de session, la CLI propose un `policy.yaml` généré à partir du trafic | onboarding d'un repo, puis passage en `strict` |
+| `strict` | anything not allowed is refused, without asking | CI, autonomous tasks |
+| `ask` | unknown request put on hold, event emitted, human decision | interactive work (Sandy, TUI) |
+| `learn` | everything passes and everything is logged; at the end of the session, the CLI proposes a `policy.yaml` generated from the traffic | onboarding a repo, then switching to `strict` |
 
-### Flux d'approbation
+### Approval flow
 
-1. **Réactif** : une commande joint un host inconnu. En mode `ask`, le proxy met la requête en attente (`hold_timeout` borné, car pip, Maven, etc. ont des timeouts et retentent) et émet un événement. Refus ou timeout : 403 avec un corps **lisible par l'agent** :
+1. **Reactive**: a command reaches an unknown host. In `ask` mode, the proxy holds the request (bounded `hold_timeout`, since pip, Maven, etc. have timeouts and retry) and emits an event. Refusal or timeout: 403 with a body **readable by the agent**:
 
    ```
    Blocked by sandbox network policy: host "foo.com" is not allowed.
    To request access, call the MCP tool `request_network_access` with the host and your reason.
    ```
-2. **Proactif** : le MCP `sandbox-control` expose `get_network_policy()` et `request_network_access(host, reason)`. L'appel bloque jusqu'à la décision, puis renvoie `allowed` ou `denied`. La demande apparaît dans le fil de l'agent (Claude, Kiro) avec sa justification.
-3. Une **skill / steering** de base explique à l'agent le modèle (proxy, où lire la politique, quoi faire quand c'est bloqué). Elle est installée par le kit de base pour chaque agent.
-4. Le MCP joint `policy.sandbox.local`, host virtuel servi par le proxy, qui n'accepte que les **demandes**. Les décisions passent par le control API hôte (socket unix).
+2. **Proactive**: the `sandbox-control` MCP exposes `get_network_policy()` and `request_network_access(host, reason)`. The call blocks until the decision, then returns `allowed` or `denied`. The request shows up in the agent's thread (Claude, Kiro) with its justification.
+3. A base **skill / steering** explains the model to the agent (proxy, where to read the policy, what to do when blocked). It is installed by the base kit for each agent.
+4. The MCP reaches `policy.sandbox.local`, a virtual host served by the proxy, which only accepts **requests**. Decisions go through the host control API (unix socket).
 
-### Sécurité de l'approbation
+### Approval security
 
-- L'agent et sa justification ne sont pas fiables (prompt injection). L'UI met en avant les **faits** : host, port, méthode, chemin, taille du body ; la raison de l'agent en second plan. Le proxy peut déchiffrer la requête en attente pour afficher `POST /api/upload (2,3 Mo)` plutôt que `foo.com`.
-- La sandbox peut demander, **jamais approuver**.
-- Contre la fatigue d'approbation : limite de débit, regroupement des demandes, deny explicites silencieux.
-- Le proxy sait quelle sandbox a émis la requête, pas quelle commande. Seul l'agent peut le préciser via le MCP, et c'est déclaratif.
-- Différence avec agentcage : chez eux, un agent LLM « Decider » peut accorder l'accès sans humain. Ici, **humain dans la boucle par défaut**.
+- The agent and its justification are not trustworthy (prompt injection). The UI highlights the **facts**: host, port, method, path, body size; the agent's reason comes second. The proxy can decrypt the held request to display `POST /api/upload (2.3 MB)` rather than `foo.com`.
+- The sandbox can request, **never approve**.
+- Against approval fatigue: rate limiting, grouping requests, silent explicit denies.
+- The proxy knows which sandbox issued the request, not which command. Only the agent can specify it via the MCP, and that is declarative.
+- Difference from agentcage: there, an LLM "Decider" agent can grant access without a human. Here, **human in the loop by default**.
 
-### Au-delà du HTTP
+### Beyond HTTP
 
-- **DNS** : un réseau `--internal` peut encore résoudre des noms externes via aardvark-dns, ce qui ouvre un canal d'exfiltration. Fournir un résolveur filtré (dnsmasq avec sinkhole des domaines non autorisés) et le tester.
-- **Non-HTTP** (git en SSH, bases de données) : bloqué par défaut ; forwards TCP explicites dans la politique pour les besoins réels.
-- Bloquer les IP privées et les endpoints de métadonnées, avec une vérification anti DNS-rebinding.
-- L'allowlist limite les **destinations**, pas le **contenu** : un host autorisé reste un canal d'exfiltration possible. Les logs d'audit du proxy sont le filet de sécurité.
+- **DNS**: an `--internal` network can still resolve external names via aardvark-dns, which opens an exfiltration channel. Provide a filtered resolver (dnsmasq sinkholing unauthorized domains) and test it.
+- **Non-HTTP** (git over SSH, databases): blocked by default; explicit TCP forwards in the policy for real needs.
+- Block private IPs and metadata endpoints, with an anti DNS-rebinding check.
+- The allowlist limits **destinations**, not **content**: an allowed host remains a possible exfiltration channel. The proxy's audit logs are the safety net.
 
-### Événements du control API (format à figer)
+### Control API events (format to freeze)
 
 ```json
 {"type":"network.request.pending","sandbox":"sbx-42","id":"req-7f3",
  "host":"adoptium.net","port":443,"method":"GET","path":"/download/jdk21.tar.gz",
- "bodyBytes":0,"agentReason":"Télécharger le JDK pour builder","source":"mcp|proxy",
+ "bodyBytes":0,"agentReason":"Download the JDK to build","source":"mcp|proxy",
  "expiresAt":"2026-11-14T19:30:00Z"}
 ```
 
-Commandes associées : `podsbox policy watch --json` (flux), `podsbox policy allow <sbx> <host> --scope once|session|project`, `podsbox policy deny …`, `podsbox policy log`.
+Related commands: `podsbox policy watch --json` (stream), `podsbox policy allow <sbx> <host> --scope once|session|project`, `podsbox policy deny …`, `podsbox policy log`.
 
-## Workspace : partagé, clone, exclusions, diff
+## Workspace: shared, clone, exclusions, diff
 
-Le mode clone est le seul qui garantit que rien ne bouge sur le disque hôte sans accord : le travail de l'agent devient une **proposition** que l'on relit, puis que l'on accepte en tout ou en partie.
+Clone mode is the only one that guarantees nothing changes on the host disk without consent: the agent's work becomes a **proposal** that you review, then accept in whole or in part.
 
-| Mode | Montage | Exclusions | Barrière de revue | Limites |
+| Mode | Mount | Exclusions | Review gate | Limits |
 | --- | --- | --- | --- | --- |
-| `shared` | bind mount du repo, `--userns=keep-id`, `:Z` sous SELinux | par masquage (voir plus bas) | non : les écritures touchent l'hôte | modifications mêlées aux vôtres ; lent sur macOS (VM) |
-| `clone` | copie du working tree (y compris non commité) dans un volume nommé ou un snapshot copy-on-write | triviales à la copie | oui | taille du repo, copie initiale |
+| `shared` | bind mount of the repo, `--userns=keep-id`, `:Z` under SELinux | by masking (see below) | no: writes hit the host | changes mixed with yours; slow on macOS (VM) |
+| `clone` | copy of the working tree (including uncommitted) into a named volume or a copy-on-write snapshot | trivial at copy time | yes | repo size, initial copy |
 
 ### `.sandboxignore`
 
-- Syntaxe gitignore. Patterns sensibles **toujours exclus et non annulables** : `.env*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.kube/`, `.npmrc`, `.pypirc`, `.netrc`, `.docker/config.json` (à compléter). Inspiration : `.broodboxignore` de brood-box.
-- Warning au lancement si un fichier qui ressemble à un secret n'est pas couvert (heuristique : nom + entropie).
-- **Mode clone** : exclusions appliquées à la copie (logique `rsync --exclude-from`).
-- **Mode partagé** : un bind mount ne sait pas exclure. On monte le repo, puis on **masque** chaque chemin ignoré par un fichier vide (`/dev/null`) ou un tmpfs monté par-dessus. Limites : globs résolus au démarrage seulement ; impossible pour des milliers de chemins (réserver aux secrets) ; ce que l'agent écrit dans un chemin masqué part dans le tmpfs et disparaît.
-- Masquer aussi par défaut `.git/hooks/` (exécution de code côté hôte) ; c'est ce que fait agentcage.
+- gitignore syntax. Sensitive patterns **always excluded and non-overridable**: `.env*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.kube/`, `.npmrc`, `.pypirc`, `.netrc`, `.docker/config.json` (to be completed). Inspiration: brood-box's `.broodboxignore`.
+- Warning at launch if a file that looks like a secret is not covered (heuristic: name + entropy).
+- **Clone mode**: exclusions applied at copy time (`rsync --exclude-from` logic).
+- **Shared mode**: a bind mount cannot exclude. We mount the repo, then **mask** each ignored path with an empty file (`/dev/null`) or a tmpfs mounted on top. Limits: globs resolved at startup only; impossible for thousands of paths (reserve it for secrets); whatever the agent writes into a masked path goes into the tmpfs and disappears.
+- Also mask `.git/hooks/` by default (code execution on the host side); this is what agentcage does.
 
-### Diff du travail de l'agent (mode clone)
+### Diffing the agent's work (clone mode)
 
-1. À la création : copie du working tree, puis **commit de base** (snapshot exact) sur une branche `sandy/<id>` ; on enregistre son SHA.
-2. Le diff = commit de base comparé à l'état courant, que l'agent ait commité ou non. Pour inclure les fichiers non suivis sans toucher à l'index de l'agent :
+1. At creation: copy of the working tree, then a **base commit** (exact snapshot) on a `sandy/<id>` branch; its SHA is recorded.
+2. The diff = base commit compared with the current state, whether the agent committed or not. To include untracked files without touching the agent's index:
 
    ```bash
    GIT_INDEX_FILE=/tmp/sandy.idx git add -A
    GIT_INDEX_FILE=/tmp/sandy.idx git diff --cached --stat <base>
    ```
-3. Export au choix :
-   - **Branche** : `git bundle create` dans la sandbox, `cp` vers l'hôte, puis `git fetch <bundle> sandy/<id>`.
-   - **Patch** : `git apply --3way` sur le working tree hôte.
-   - **PR** : push vers le remote via le proxy (token injecté).
-4. Le SHA de base permet un merge 3-way ou un rebase propre si l'hôte a avancé entre-temps.
-5. Alternative inspirée de brood-box : snapshot copy-on-write (FICLONE sur Linux, `clonefile` sur macOS), diff fichier par fichier, écriture des fichiers acceptés après revérification des hashs, bits setuid/setgid supprimés.
+3. Export, as you choose:
+   - **Branch**: `git bundle create` in the sandbox, `cp` to the host, then `git fetch <bundle> sandy/<id>`.
+   - **Patch**: `git apply --3way` on the host working tree.
+   - **PR**: push to the remote via the proxy (injected token).
+4. The base SHA enables a clean 3-way merge or rebase if the host has moved on in the meantime.
+5. Alternative inspired by brood-box: copy-on-write snapshot (FICLONE on Linux, `clonefile` on macOS), file-by-file diff, accepted files written after re-checking hashes, setuid/setgid bits stripped.
 
-En mode partagé, un diff reste possible : `git stash create` au lancement produit un snapshot sans rien modifier. Mais il n'y a pas de barrière de revue.
+In shared mode, a diff is still possible: `git stash create` at launch produces a snapshot without modifying anything. But there is no review gate.
 
-### Ce que ça permet côté Sandy (plus tard)
+### What this enables on the Sandy side (later)
 
-- Diff en direct pendant que l'agent travaille ; acceptation par fichier ou par hunk.
-- **Checkpoints** automatiques (à chaque tour d'agent via un hook, ou toutes les N minutes) et retour en arrière.
-- Plusieurs sandboxes sur la même base (Kiro contre Claude, deux prompts) et comparaison des diffs.
+- Live diff while the agent works; acceptance per file or per hunk.
+- Automatic **checkpoints** (at each agent turn via a hook, or every N minutes) and rollback.
+- Several sandboxes on the same base (Kiro versus Claude, two prompts) and diff comparison.
 
-**Point de design** : la logique de diff vit **dans Sandy**, pas dans la CLI. Elle n'a besoin que de `exec` et `cp`, que sbx et la CLI fournissent toutes les deux, donc elle marche avec les deux providers. La CLI peut exposer un raccourci `podsbox diff <id> --json` pour un usage sans Sandy.
+**Design point**: the diff logic lives **in Sandy**, not in the CLI. It only needs `exec` and `cp`, which sbx and the CLI both provide, so it works with both providers. The CLI can expose a `podsbox diff <id> --json` shortcut for use without Sandy.
 
-## Images, kits, MCP et skills
+## Images, kits, MCP and skills
 
-Une image par agent, construite en couches pour ne maintenir chaque chose qu'à un endroit. Un kit = une image (ou une couche) + une politique réseau + une config runtime (MCP, skills, env, volumes d'auth).
+One image per agent, built in layers so each thing is maintained in only one place. A kit = an image (or a layer) + a network policy + a runtime config (MCP, skills, env, auth volumes).
 
-### Couches d'images
+### Image layers
 
 ```
-sbx-base          ← CA de la sandbox, variables proxy, user 1000, git, outils de base
+sbx-base          ← sandbox CA, proxy variables, user 1000, git, base tools
    └── sbx-polyglot   ← JDK + Maven/Gradle, Python + uv, Node + pnpm
          ├── sbx-kiro     ← kiro-cli + config
          ├── sbx-claude   ← Claude Code + config
          └── sbx-codex    ← …
 ```
 
-- La base change rarement ; la toolchain est lourde et partagée ; la couche agent est petite et change chaque semaine.
-- L'agent prend sa base en paramètre (`ARG BASE`), ce qui permet des variantes de toolchain (`sbx/kiro:java`, `sbx/kiro:polyglot`) sans toucher à l'agent.
+- The base rarely changes; the toolchain is heavy and shared; the agent layer is small and changes every week.
+- The agent takes its base as a parameter (`ARG BASE`), which allows toolchain variants (`sbx/kiro:java`, `sbx/kiro:polyglot`) without touching the agent.
 
-Image de base (extrait) :
+Base image (excerpt):
 
 ```dockerfile
 FROM registry.example.internal/ubi9/openjdk-21
@@ -338,26 +338,26 @@ ENV HTTPS_PROXY=http://proxy:8080 HTTP_PROXY=http://proxy:8080 \
 USER 1000
 ```
 
-Couche agent (exemple Kiro) :
+Agent layer (Kiro example):
 
 ```dockerfile
 ARG BASE=registry.example.internal/sbx/polyglot:2026.11
 FROM ${BASE}
 ARG KIRO_VERSION=2.31.0
 USER root
-RUN curl -fsSL https://cli.kiro.dev/install | bash   # idéalement : version pinnée, binaire depuis le registry interne
+RUN curl -fsSL https://cli.kiro.dev/install | bash   # ideally: pinned version, binary from the internal registry
 USER 1000
 LABEL sbx.agent="kiro" sbx.agent.version="${KIRO_VERSION}"
 ENTRYPOINT ["kiro-cli", "chat", "--v3"]
 ```
 
-Si la CA est éphémère par sandbox, elle est injectée au démarrage (volume en lecture seule + script d'entrée qui met à jour les trust stores) au lieu d'être cuite dans l'image.
+If the CA is ephemeral per sandbox, it is injected at startup (read-only volume + entrypoint script that updates the trust stores) instead of being baked into the image.
 
-### Format de kit (neutre, à spécifier)
+### Kit format (neutral, to be specified)
 
 ```yaml
 name: kiro-java
-image: { base: sbx/polyglot, agent: kiro }   # ou une couche de paquets/fichiers
+image: { base: sbx/polyglot, agent: kiro }   # or a layer of packages/files
 env: { KIRO_LOG: info }
 network: { extends: base, rules: [ { host: "*.kiro.dev", allow: true } ] }
 secrets: [ { name: gitlab, host: gitlab.example.internal, header: PRIVATE-TOKEN } ]
@@ -368,218 +368,218 @@ skills: [ { name: operating-in-sandbox, builtin: true }, { path: ./skills/java-c
 volumes: { auth: ~/.local/share/kiro-cli }
 ```
 
-- **Compilation en deux parties** : une couche d'image mise en cache par hash (démarrage rapide) et une config runtime appliquée au lancement.
-- **Adapters par agent** : le kit décrit les MCP et skills une fois ; chaque adapter génère le bon format (`.mcp.json` / `~/.claude.json` et `.claude/skills` pour Claude Code ; `~/.kiro/settings/mcp.json`, steering et powers pour Kiro ; `config.toml` pour Codex). C'est le poste le plus coûteux à maintenir, car ces formats changent souvent.
-- **Question ouverte** : lire directement le format de kit sbx si celui-ci est documenté et stable (compatibilité gratuite « un kit pour les deux outils »), sinon traduire le format neutre vers sbx.
+- **Two-part compilation**: an image layer cached by hash (fast startup) and a runtime config applied at launch.
+- **Per-agent adapters**: the kit describes MCPs and skills once; each adapter generates the right format (`.mcp.json` / `~/.claude.json` and `.claude/skills` for Claude Code; `~/.kiro/settings/mcp.json`, steering and powers for Kiro; `config.toml` for Codex). This is the most expensive item to maintain, since these formats change often.
+- **Open question**: read the sbx kit format directly if it is documented and stable (free "one kit for both tools" compatibility), otherwise translate the neutral format to sbx.
 
-### Trois cas de MCP
+### Three MCP cases
 
-| Cas | Fonctionnement | Secrets |
+| Case | How it works | Secrets |
 | --- | --- | --- |
-| stdio, dans la sandbox | installé par le kit dans l'image ou au lancement | via le proxy pour ses appels HTTP sortants |
-| HTTP distant | passe par le proxy, host dans l'allowlist | **token injecté par le proxy** : l'agent ne le voit pas |
-| sur l'hôte | pont vers `host.containers.internal`, autorisé explicitement | restent sur l'hôte |
+| stdio, inside the sandbox | installed by the kit in the image or at launch | via the proxy for its outgoing HTTP calls |
+| remote HTTP | goes through the proxy, host in the allowlist | **token injected by the proxy**: the agent does not see it |
+| on the host | bridge to `host.containers.internal`, explicitly allowed | stay on the host |
 
-Alternative à étudier (kuza/agentbox) : un **sidecar MCP** par service, qui détient le token et expose un endpoint MCP sans secret à l'agent.
+Alternative to study (kuza/agentbox): an **MCP sidecar** per service, which holds the token and exposes a secret-free MCP endpoint to the agent.
 
 ### Maintenance
 
-- Repo dédié : `base/`, `toolchains/`, `agents/`, `kits/`, `policies/`.
-- CI : rebuild hebdomadaire (CVE, mises à jour d'agents), push sur le registry (interne en entreprise, GHCR en open source), tags datés + `latest`, versions pinnées, scan d'images (Trivy ou équivalent).
+- Dedicated repo: `base/`, `toolchains/`, `agents/`, `kits/`, `policies/`.
+- CI: weekly rebuild (CVEs, agent updates), push to the registry (internal in enterprise, GHCR in open source), dated tags + `latest`, pinned versions, image scanning (Trivy or equivalent).
 
-## Spécification CLI
+## CLI specification
 
-Verbes calqués sur sbx ; chaque commande accepte `--output json` et renvoie un code de sortie stable. Proposition de première surface, à valider :
+Verbs modeled on sbx; every command accepts `--output json` and returns a stable exit code. Proposed first surface, to be validated:
 
-| Commande | Rôle | Version |
+| Command | Role | Version |
 | --- | --- | --- |
-| `podsbox run <agent\|kit> [path] [--mode shared\|clone] [--name] [--policy strict\|ask\|learn]` | crée et attache une sandbox (agent interactif) | v0.1 |
-| `podsbox create` / `start` / `stop` / `rm` / `ls` | cycle de vie, sandboxes persistantes | v0.1 |
-| `podsbox exec <id> -- <cmd>` / `attach <id>` | commande ou PTY dans la sandbox | v0.1 |
-| `podsbox doctor` | vérifie Podman rootless, subuid/subgid, réseaux, DNS, SELinux | v0.1 |
-| `podsbox policy show\|allow\|deny\|log\|watch\|reload` | politique réseau, approbations, audit | v0.1 (allowlist), v0.4 (approbations) |
-| `podsbox secret set\|ls\|rm` | secrets dans le keychain OS | v0.2 |
-| `podsbox cp <src> <dst>` | copie de fichiers (screenshots, artefacts) | v0.3 |
-| `podsbox port <id> <port>` | exposition d'un port de la sandbox sur `127.0.0.1` | v0.3 |
-| `podsbox diff <id>` / `export <id> --as branch\|patch\|push` | travail de l'agent en mode clone | v0.3 |
-| `podsbox kit ls\|add\|build` | kits : images, MCP, skills, politique | v0.3 / v0.4 |
+| `podsbox run <agent\|kit> [path] [--mode shared\|clone] [--name] [--policy strict\|ask\|learn]` | creates and attaches a sandbox (interactive agent) | v0.1 |
+| `podsbox create` / `start` / `stop` / `rm` / `ls` | lifecycle, persistent sandboxes | v0.1 |
+| `podsbox exec <id> -- <cmd>` / `attach <id>` | command or PTY in the sandbox | v0.1 |
+| `podsbox doctor` | checks rootless Podman, subuid/subgid, networks, DNS, SELinux | v0.1 |
+| `podsbox policy show\|allow\|deny\|log\|watch\|reload` | network policy, approvals, audit | v0.1 (allowlist), v0.4 (approvals) |
+| `podsbox secret set\|ls\|rm` | secrets in the OS keychain | v0.2 |
+| `podsbox cp <src> <dst>` | file copy (screenshots, artifacts) | v0.3 |
+| `podsbox port <id> <port>` | exposes a sandbox port on `127.0.0.1` | v0.3 |
+| `podsbox diff <id>` / `export <id> --as branch\|patch\|push` | the agent's work in clone mode | v0.3 |
+| `podsbox kit ls\|add\|build` | kits: images, MCP, skills, policy | v0.3 / v0.4 |
 
-### Fichiers de configuration
+### Configuration files
 
-- Global : `~/.config/podsbox/config.yaml`, `~/.config/podsbox/policy.yaml`.
-- Projet : `.sandy/policy.yaml` (versionné), `.sandboxignore`, `.sandy/kit.yaml` optionnel.
-- État : `~/.local/share/podsbox/<id>/` (métadonnées, SHA de base, logs d'audit).
+- Global: `~/.config/podsbox/config.yaml`, `~/.config/podsbox/policy.yaml`.
+- Project: `.sandy/policy.yaml` (versioned), `.sandboxignore`, optional `.sandy/kit.yaml`.
+- State: `~/.local/share/podsbox/<id>/` (metadata, base SHA, audit logs).
 
-### Exigences transverses
+### Cross-cutting requirements
 
-- Fermeture par défaut : un fichier absent ou invalide = aucun accès supplémentaire, jamais l'inverse.
-- Une politique de projet ne peut **pas élargir** la politique globale (règle de brood-box).
-- Toute action du proxy est loguée (décision, host, méthode, chemin, taille) dans un format exploitable par Sandy.
-- Tests d'évasion automatisés dans la CI : lecture de `~/.ssh` hôte, sortie réseau directe, DNS externe, accès au socket Podman, exfiltration d'un faux secret (inspiration : script de test de thenaithan/agent-sandbox-podman).
+- Fail closed by default: a missing or invalid file = no additional access, never the opposite.
+- A project policy **cannot widen** the global policy (brood-box rule).
+- Every proxy action is logged (decision, host, method, path, size) in a format Sandy can consume.
+- Automated escape tests in CI: reading the host `~/.ssh`, direct network egress, external DNS, access to the Podman socket, exfiltration of a fake secret (inspiration: thenaithan/agent-sandbox-podman's test script).
 
-## Roadmap MVP
+## MVP roadmap
 
-Quatre versions séquentielles, puis des chantiers ultérieurs ; chacune est utilisable seule et se termine par un critère de sortie vérifiable.
+Four sequential versions, then later workstreams; each is usable on its own and ends with a verifiable exit criterion.
 
-### v0.1 — Sandbox réseau fermé
+### v0.1 — Closed-network sandbox
 
-- [ ] Squelette Go, interface `Runtime`, implémentation Podman rootless via le socket
-- [ ] `run` / `exec` / `attach` / `ls` / `rm` / `doctor`, `--output json` partout
-- [ ] Durcissement par défaut du conteneur agent (section Isolation)
-- [ ] Réseau `--internal` + conteneur proxy en allowlist (sans injection) + DNS filtré
-- [ ] Mode `shared` + `.sandboxignore` par masquage, avec patterns sensibles forcés
-- [ ] Images `sbx-base`, `sbx-polyglot`, `sbx-claude`, `sbx-kiro`
+- [ ] Go skeleton, `Runtime` interface, rootless Podman implementation via the socket
+- [ ] `run` / `exec` / `attach` / `ls` / `rm` / `doctor`, `--output json` everywhere
+- [ ] Default hardening of the agent container (Isolation section)
+- [ ] `--internal` network + allowlist proxy container (without injection) + filtered DNS
+- [ ] `shared` mode + `.sandboxignore` by masking, with forced sensitive patterns
+- [ ] `sbx-base`, `sbx-polyglot`, `sbx-claude`, `sbx-kiro` images
 
-Critère de sortie : Claude Code et Kiro tournent en mode autonome ; les tests d'évasion (réseau direct, DNS externe, `~/.ssh` hôte, socket Podman) échouent tous.
+Exit criterion: Claude Code and Kiro run in autonomous mode; the escape tests (direct network, external DNS, host `~/.ssh`, Podman socket) all fail.
 
 ### v0.2 — Secrets
 
-- [ ] `secret set|ls|rm` (keychain OS, fallback fichier chiffré)
-- [ ] Injection par host avec placeholders aléatoires ; rédaction des secrets dans les réponses
-- [ ] CA éphémère par sandbox, distribuée à tous les trust stores (système, Python, Node, Java)
-- [ ] Logs d'audit du proxy
+- [ ] `secret set|ls|rm` (OS keychain, encrypted file fallback)
+- [ ] Per-host injection with random placeholders; secret redaction in responses
+- [ ] Ephemeral per-sandbox CA, distributed to all trust stores (system, Python, Node, Java)
+- [ ] Proxy audit logs
 
-Critère de sortie : `printenv` et la lecture du disque dans la sandbox ne révèlent aucun secret réel ; les appels API fonctionnent.
+Exit criterion: `printenv` and reading the disk inside the sandbox reveal no real secret; API calls work.
 
 ### v0.3 — Clone, diff, kits v1
 
-- [ ] Mode `clone` (copie avec exclusions, commit de base, branche `sandy/<id>`)
+- [ ] `clone` mode (copy with exclusions, base commit, `sandy/<id>` branch)
 - [ ] `diff` / `export --as branch|patch|push`
 - [ ] `cp`, `port`
-- [ ] Kits v1 : image + env + politique
+- [ ] Kits v1: image + env + policy
 
-Critère de sortie : le travail d'un agent revient sous forme de branche relisible, sans qu'aucun fichier hôte ait changé avant l'export.
+Exit criterion: an agent's work comes back as a reviewable branch, without any host file having changed before the export.
 
-### v0.4 — Approbations et agents
+### v0.4 — Approvals and agents
 
-- [ ] Mode `ask` : mise en attente, événements `policy watch --json`, `policy allow|deny --scope`
-- [ ] MCP `sandbox-control` + skill `operating-in-sandbox` pour chaque agent
-- [ ] Mode `learn` + génération de `policy.yaml`
-- [ ] Adapters MCP et skills pour Claude Code et Kiro
-- [ ] TUI minimale pour les approbations sans Sandy
+- [ ] `ask` mode: holding, `policy watch --json` events, `policy allow|deny --scope`
+- [ ] `sandbox-control` MCP + `operating-in-sandbox` skill for each agent
+- [ ] `learn` mode + `policy.yaml` generation
+- [ ] MCP and skills adapters for Claude Code and Kiro
+- [ ] Minimal TUI for approvals without Sandy
 
-Critère de sortie : un agent bloqué demande l'accès via le MCP, un humain approuve, l'agent reprend sans intervention manuelle.
+Exit criterion: a blocked agent requests access via the MCP, a human approves, the agent resumes without manual intervention.
 
-### Plus tard
+### Later
 
-- Runtime microVM (`podman --runtime krun`, Kata ; regarder `go-microvm` de brood-box)
-- Backend Kubernetes (pod durci, proxy en pod séparé, vcluster optionnel)
-- OAuth géré par le proxy, agent par agent
-- Podman-in-Podman rootless (Testcontainers)
-- Intégration Sandy (`PodsboxProvider`)
+- microVM runtime (`podman --runtime krun`, Kata; look at brood-box's `go-microvm`)
+- Kubernetes backend (hardened pod, proxy in a separate pod, optional vcluster)
+- OAuth handled by the proxy, agent by agent
+- Rootless Podman-in-Podman (Testcontainers)
+- Sandy integration (`PodsboxProvider`)
 
-## Prior art et inspirations
+## Prior art and inspirations
 
-Aucun projet open source ne couvre toute la liste, mais chaque feature existe déjà quelque part, souvent en Go et sous licence MIT ou Apache-2.0. Stratégie retenue : une CLI propre en Go, qui reprend les meilleures idées ; lancer agentcage et mattolson/agent-sandbox en local avant de figer l'architecture. Vérifier les licences avant toute reprise de code et conserver les mentions de copyright.
+No open-source project covers the whole list, but every feature already exists somewhere, often in Go and under an MIT or Apache-2.0 license. Chosen strategy: a clean CLI in Go that takes the best ideas; run agentcage and mattolson/agent-sandbox locally before freezing the architecture. Check licenses before reusing any code and keep the copyright notices.
 
-| Projet | Techno / licence | Ce qu'on reprend | Ce qui manque |
+| Project | Tech / license | What we take | What is missing |
 | --- | --- | --- | --- |
-| [agentcage](https://github.com/agentcage/agentcage) | probablement Python, MIT, \~22 étoiles | Podman rootless + quadlets, egress deny par défaut, placeholders aléatoires et rédaction des réponses, mitmdump + chaîne d'inspecteurs, DNS sinkhole (dnsmasq), blocage IP privées et métadonnées, **Policy API** `agentcage.local` où l'agent demande un accès avec justification, masques tmpfs sur `.git/hooks/` | MCP, skills, kits, mode clone ; décision par un LLM « Decider » et non un humain ; petit projet sans release |
-| [mattolson/agent-sandbox](https://github.com/mattolson/agent-sandbox) | Go + addon mitmproxy (`enforcer.py`), MIT, \~212 étoiles | politique YAML en couches (utilisateur, par agent) avec règles par scheme / méthode / chemin / query, rechargement à chaud, secrets montés dans le seul proxy, firewall iptables, skill `operating-in-agent-sandbox` et politique lisible dans `/run/agentbox/policy.yaml` | pensé pour Docker / compose, pas de MCP, early stage |
-| [brood-box (Stacklok)](https://awesome.ecosyste.ms/projects/github.com%2Fstacklok%2Fbrood-box) | Go pur, Apache-2.0, \~20 étoiles | microVM libkrun, snapshot copy-on-write du workspace, revue du diff fichier par fichier, `.broodboxignore` avec patterns sensibles forcés, profils d'egress, une config projet ne peut pas élargir le global | pas de proxy d'injection (secrets passés en env dans la VM), exige KVM, expérimental |
-| [container-use (Dagger)](https://docsearch.algolia.com/mcp/docs/repo/dagger/container-use) | Go, \~3,6k étoiles | un conteneur + une branche git par agent, historique en git notes, exposition en MCP, revue par `git checkout` | dépend de Dagger / Docker, pas de proxy de secrets |
-| [kuza/agentbox](https://github.com/kuza/agentbox) | Podman rootless | réseau `--internal`, Squid en allowlist, **sidecars MCP** qui détiennent les tokens hors de la box | pas d'injection, Claude Code et pi uniquement |
-| [devgugga/agent-sandbox](https://github.com/devgugga/agent-sandbox) | Podman rootless + systemd | clone par workspace, `.agent-sandbox.toml` par projet (domaines, ports, Podman imbriqué, services Postgres / Redis), `reload-allowlist` sans redémarrer l'agent | pas d'injection de secrets |
-| [thomaspeklak/agent-sandbox (ags)](https://github.com/thomaspeklak/agent-sandbox) | Rust, Podman rootless | multi-agents (pi, claude, codex, gemini, opencode), sources de secrets ordonnées (env, secret store, commande hôte), prompts allow / deny via zenity / kdialog | jeune ; approbations en popup de bureau |
-| [h5i](https://medium.com/@Koukyosyumei/h5i-a-lightweight-rootless-container-sandbox-for-claude-code-and-codex-e9a9eb0cf71e) | Podman rootless | capabilities toutes supprimées, rootfs en lecture seule, workspace git jetable, proxy de credentials côté hôte, patch + traces d'exécution pour la revue | peu documenté |
-| [thenaithan/agent-sandbox-podman](https://github.com/thenaithan/agent-sandbox-podman) | Podman rootless | **script qui teste les limites** sur la machine (montages, sockets, loopback hôte via pasta `--no-map-gw`) | egress ouvert |
-| [ftnilsson/dev-containers](https://github.com/ftnilsson/dev-containers) | Podman + devcontainer | Squid sidecar en CONNECT sans déchiffrement (pas de CA) : bon modèle pour un mode « allowlist sans injection » | pas d'injection |
-| [microsandbox](https://docs.vultr.com/how-to-set-up-agent-sandboxing-on-vultr-cloud-compute) | libkrun, SDK Python / TS / Rust / Go | microVM à partir d'images OCI, trafic entre VM refusé par défaut, serveur MCP de cycle de vie | pas spécifique aux coding agents interactifs |
+| [agentcage](https://github.com/agentcage/agentcage) | probably Python, MIT, \~22 stars | rootless Podman + quadlets, egress deny by default, random placeholders and response redaction, mitmdump + inspector chain, DNS sinkhole (dnsmasq), blocking private IPs and metadata, **Policy API** `agentcage.local` where the agent requests access with a justification, tmpfs masks on `.git/hooks/` | MCP, skills, kits, clone mode; decision by an LLM "Decider" rather than a human; small project with no release |
+| [mattolson/agent-sandbox](https://github.com/mattolson/agent-sandbox) | Go + mitmproxy addon (`enforcer.py`), MIT, \~212 stars | layered YAML policy (user, per agent) with rules by scheme / method / path / query, hot reload, secrets mounted only in the proxy, iptables firewall, `operating-in-agent-sandbox` skill and policy readable in `/run/agentbox/policy.yaml` | designed for Docker / compose, no MCP, early stage |
+| [brood-box (Stacklok)](https://awesome.ecosyste.ms/projects/github.com%2Fstacklok%2Fbrood-box) | pure Go, Apache-2.0, \~20 stars | libkrun microVM, copy-on-write workspace snapshot, file-by-file diff review, `.broodboxignore` with forced sensitive patterns, egress profiles, a project config cannot widen the global one | no injection proxy (secrets passed as env into the VM), requires KVM, experimental |
+| [container-use (Dagger)](https://docsearch.algolia.com/mcp/docs/repo/dagger/container-use) | Go, \~3.6k stars | one container + one git branch per agent, history in git notes, exposed as MCP, review via `git checkout` | depends on Dagger / Docker, no secrets proxy |
+| [kuza/agentbox](https://github.com/kuza/agentbox) | rootless Podman | `--internal` network, Squid as allowlist, **MCP sidecars** that hold the tokens outside the box | no injection, Claude Code and pi only |
+| [devgugga/agent-sandbox](https://github.com/devgugga/agent-sandbox) | rootless Podman + systemd | clone per workspace, per-project `.agent-sandbox.toml` (domains, ports, nested Podman, Postgres / Redis services), `reload-allowlist` without restarting the agent | no secret injection |
+| [thomaspeklak/agent-sandbox (ags)](https://github.com/thomaspeklak/agent-sandbox) | Rust, rootless Podman | multi-agent (pi, claude, codex, gemini, opencode), ordered secret sources (env, secret store, host command), allow / deny prompts via zenity / kdialog | young; approvals as desktop popups |
+| [h5i](https://medium.com/@Koukyosyumei/h5i-a-lightweight-rootless-container-sandbox-for-claude-code-and-codex-e9a9eb0cf71e) | rootless Podman | all capabilities dropped, read-only rootfs, disposable git workspace, host-side credentials proxy, patch + execution traces for review | poorly documented |
+| [thenaithan/agent-sandbox-podman](https://github.com/thenaithan/agent-sandbox-podman) | rootless Podman | **script that tests the boundaries** on the machine (mounts, sockets, host loopback via pasta `--no-map-gw`) | open egress |
+| [ftnilsson/dev-containers](https://github.com/ftnilsson/dev-containers) | Podman + devcontainer | Squid sidecar doing CONNECT without decryption (no CA): a good model for an "allowlist without injection" mode | no injection |
+| [microsandbox](https://docs.vultr.com/how-to-set-up-agent-sandboxing-on-vultr-cloud-compute) | libkrun, Python / TS / Rust / Go SDK | microVM from OCI images, inter-VM traffic denied by default, lifecycle MCP server | not specific to interactive coding agents |
 
-### Briques de proxy de credentials réutilisables
+### Reusable credential proxy building blocks
 
-| Projet | Modèle |
+| Project | Model |
 | --- | --- |
-| [Infisical Agent Vault](https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents) | forward proxy MITM via `HTTPS_PROXY`, vault intégré, research preview |
-| [agent-airlock](https://github.com/es617/agent-airlock) | petit reverse proxy côté hôte, token de proxy révocable, écoute possible sur socket unix, erreurs marquées `X-Agent-Airlock` |
-| [OneGate](https://onegate.178-104-9-163.sslip.io/) | gateway MIT, CA racine à approuver, placeholders remplacés par les vrais secrets, politique par agent |
-| Aegis (Product Hunt) | proxy local Apache-2.0, vault chiffré, allowlist par domaine, audit, serveur MCP |
+| [Infisical Agent Vault](https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents) | MITM forward proxy via `HTTPS_PROXY`, built-in vault, research preview |
+| [agent-airlock](https://github.com/es617/agent-airlock) | small host-side reverse proxy, revocable proxy token, can listen on a unix socket, errors tagged `X-Agent-Airlock` |
+| [OneGate](https://onegate.178-104-9-163.sslip.io/) | MIT gateway, root CA to trust, placeholders replaced by the real secrets, per-agent policy |
+| Aegis (Product Hunt) | Apache-2.0 local proxy, encrypted vault, per-domain allowlist, audit, MCP server |
 
-### Références produit (non open source ou plateformes)
+### Product references (not open source, or platforms)
 
-- **Docker Sandboxes (sbx)** : microVM, proxy hôte `gateway.docker.internal:3128`, CA dans le trust store, `JAVA_TOOL_OPTIONS` pour Java, secrets dans le keychain OS remplacés par des sentinelles. Modèle de référence à reproduire.
-- **Modal, Cloudflare Sandboxes, Lens agents** : une CA éphémère par sandbox, installée à la création, variables `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`.
-- **kubernetes-sigs/agent-sandbox** : CRDs `Sandbox`, `SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`, isolation gVisor / Kata ; référence pour le futur backend K8s.
-- **Sandboxes natives** : Claude Code `/sandbox` (bubblewrap + socat sur Linux, Seatbelt sur macOS) et Kiro `/sandbox` (IDE 1.3+, CLI 2.31+ en sessions V3 ; Seatbelt, bubblewrap, AppContainer) : garde-fous complémentaires, pas des sandboxes d'agent.
+- **Docker Sandboxes (sbx)**: microVM, host proxy `gateway.docker.internal:3128`, CA in the trust store, `JAVA_TOOL_OPTIONS` for Java, secrets in the OS keychain replaced by sentinels. Reference model to reproduce.
+- **Modal, Cloudflare Sandboxes, Lens agents**: one ephemeral CA per sandbox, installed at creation, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` variables.
+- **kubernetes-sigs/agent-sandbox**: `Sandbox`, `SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim` CRDs, gVisor / Kata isolation; reference for the future K8s backend.
+- **Native sandboxes**: Claude Code `/sandbox` (bubblewrap + socat on Linux, Seatbelt on macOS) and Kiro `/sandbox` (IDE 1.3+, CLI 2.31+ in V3 sessions; Seatbelt, bubblewrap, AppContainer): complementary guardrails, not agent sandboxes.
 
-## Risques, pièges et questions ouvertes
+## Risks, pitfalls and open questions
 
-Le risque principal n'est pas le sandboxing mais la maintenance des adapters par agent (formats MCP, skills, auth) et le périmètre : sbx est le produit d'une équipe entière.
+The main risk is not the sandboxing but the maintenance of the per-agent adapters (MCP formats, skills, auth) and the scope: sbx is the product of an entire team.
 
-### Pièges techniques connus
+### Known technical pitfalls
 
-| Piège | Parade |
+| Pitfall | Mitigation |
 | --- | --- |
-| Volumes en rootless : uid inattendus côté hôte | `--userns=keep-id` |
-| SELinux (Fedora, RHEL) : permission denied sur les volumes | suffixe `:Z` |
-| Noms d'images courts refusés ou ambigus | noms complets (`docker.io/library/…`) ou registry interne dans `registries.conf` |
-| Ports < 1024 interdits en rootless | ports ≥ 1024 |
-| Outils qui attendent le socket Docker (Testcontainers) | `systemctl --user enable --now podman.socket`, `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock`, souvent `TESTCONTAINERS_RYUK_DISABLED=true` ; dans la sandbox, Podman-in-Podman rootless |
-| Java ignore `HTTPS_PROXY` et a son propre truststore | `JAVA_TOOL_OPTIONS` + `keytool` |
-| Certificate pinning | mode B (reverse proxy) ou passthrough sans injection |
-| DNS résolu malgré `--internal` | résolveur filtré + test dédié |
-| `--dangerously-skip-permissions` refusé en root (Claude Code) | utilisateur non root dans l'image |
-| Repli silencieux des sandboxes natives (Kiro, Claude Code) si la dépendance manque | `sandbox.failIfUnavailable: true` (Claude Code) ; vérifier le statut côté Kiro |
-| Bind mounts lents sur macOS (VM `podman machine`) | préférer le mode clone sur macOS |
+| Rootless volumes: unexpected uids on the host side | `--userns=keep-id` |
+| SELinux (Fedora, RHEL): permission denied on volumes | `:Z` suffix |
+| Short image names refused or ambiguous | fully qualified names (`docker.io/library/…`) or internal registry in `registries.conf` |
+| Ports < 1024 forbidden in rootless | ports ≥ 1024 |
+| Tools that expect the Docker socket (Testcontainers) | `systemctl --user enable --now podman.socket`, `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock`, often `TESTCONTAINERS_RYUK_DISABLED=true`; inside the sandbox, rootless Podman-in-Podman |
+| Java ignores `HTTPS_PROXY` and has its own truststore | `JAVA_TOOL_OPTIONS` + `keytool` |
+| Certificate pinning | mode B (reverse proxy) or passthrough without injection |
+| DNS resolved despite `--internal` | filtered resolver + dedicated test |
+| `--dangerously-skip-permissions` refused as root (Claude Code) | non-root user in the image |
+| Native sandboxes (Kiro, Claude Code) silently fall back if the dependency is missing | `sandbox.failIfUnavailable: true` (Claude Code); check the status on the Kiro side |
+| Slow bind mounts on macOS (`podman machine` VM) | prefer clone mode on macOS |
 
-### Limites assumées de la v1
+### Accepted v1 limitations
 
-- Noyau partagé : une faille noyau permet une évasion. Parade future : runtime microVM.
-- Tokens OAuth (Claude abonnement, Kiro SSO) présents dans la sandbox.
-- Un host autorisé reste un canal d'exfiltration ; l'allowlist limite les destinations, pas le contenu.
-- La clé injectée garde tout son périmètre : le proxy contrôle où part la requête, pas ce qu'elle fait. Utiliser des tokens au périmètre minimal.
+- Shared kernel: a kernel flaw allows an escape. Future mitigation: microVM runtime.
+- OAuth tokens (Claude subscription, Kiro SSO) present in the sandbox.
+- An allowed host remains an exfiltration channel; the allowlist limits destinations, not content.
+- The injected key keeps its full scope: the proxy controls where the request goes, not what it does. Use minimally scoped tokens.
 
-### Questions ouvertes
+### Open questions
 
-- [ ] OS du poste en entreprise (Linux, macOS, Windows/WSL2) ? Conditionne le défaut shared ou clone et la faisabilité de krun.
-- [ ] Le format de kit sbx est-il documenté et stable, pour une lecture directe ?
-- [ ] sbx expose-t-il ses demandes et décisions réseau en CLI, pour faire marcher le MCP `sandbox-control` avec le `SbxProvider` ?
-- [ ] Comment Kiro CLI s'authentifie-t-il exactement (fichier de session SQLite, refresh) et peut-on garder ce token hors de la sandbox ?
-- [ ] Le proxy d'entreprise fait-il de l'interception TLS (CA d'entreprise à intégrer au conteneur proxy) ?
-- [ ] La plateforme K8s propose-t-elle une `RuntimeClass` gVisor ou Kata ? Est-ce OpenShift (Dev Spaces supporte Kiro en remote SSH) ?
-- [ ] Proxy final en Go natif (goproxy, martian) ou mitmproxy conservé ?
-- [ ] Nom définitif du projet.
+- [ ] Workstation OS in the enterprise (Linux, macOS, Windows/WSL2)? Determines the shared or clone default and the feasibility of krun.
+- [ ] Is the sbx kit format documented and stable, for direct reading?
+- [ ] Does sbx expose its network requests and decisions in its CLI, so the `sandbox-control` MCP can work with the `SbxProvider`?
+- [ ] How exactly does Kiro CLI authenticate (SQLite session file, refresh), and can that token be kept outside the sandbox?
+- [ ] Does the corporate proxy do TLS interception (corporate CA to integrate into the proxy container)?
+- [ ] Does the K8s platform offer a gVisor or Kata `RuntimeClass`? Is it OpenShift (Dev Spaces supports Kiro over remote SSH)?
+- [ ] Final proxy in native Go (goproxy, martian), or keep mitmproxy?
+- [ ] Final project name.
 
-### Hors technique
+### Non-technical
 
-- **Propriété intellectuelle** : vérifier le contrat de travail (clause PI, projets personnels) avant de développer ou publier en open source un outil utilisé au travail, surtout s'il est développé en partie sur le temps de travail.
-- **Validation sécurité** : présenter l'outil à la sécu / IT comme une proposition plutôt qu'un contournement ; un scan d'images et les tests d'évasion en CI sont de bons arguments.
+- **Intellectual property**: check the employment contract (IP clause, personal projects) before developing or publishing as open source a tool used at work, especially if it is developed partly on work time.
+- **Security validation**: present the tool to security / IT as a proposal rather than a workaround; image scanning and escape tests in CI are good arguments.
 
-## Références
+## References
 
-### Docker Sandboxes (sbx), modèle de référence
+### Docker Sandboxes (sbx), reference model
 
 - [Docker Sandboxes — Manage credentials](https://docs.docker.com/ai/sandboxes/configuration/credentials/)
-- [Docker Sandboxes — Troubleshooting (CA, chemins forward / transparent)](https://docs.docker.com/ai/sandboxes/troubleshooting/)
+- [Docker Sandboxes — Troubleshooting (CA, forward / transparent paths)](https://docs.docker.com/ai/sandboxes/troubleshooting/)
 - [Docker Sandboxes — Kiro](https://docs.docker.com/ai/sandboxes/agents/kiro/)
 - [Varlock — Docker Sandboxes (gateway, CA, sbx secret)](https://varlock.dev/sandboxes/docker-sandboxes/)
 - [DZone — Docker Sandbox isolation story (JAVA\_TOOL\_OPTIONS)](https://dzone.com/articles/docker-sandbox-isolation-story)
 - [Docker Labs — Network control and proxy-managed credentials](https://dockerlabs.collabnix.com/docker-workshop/ai-governance/kits/network-and-creds)
 
-### Sandboxes natives des agents
+### Native agent sandboxes
 
 - [Kiro — Local command sandbox](https://kiro.dev/docs/sandbox/)
 - [Kiro blog — Local sandboxing](https://kiro.dev/blog/local-sandboxing/)
 - [Kiro — Tool permissions (`/tools trust-all`)](https://kiro.dev/docs/cli/chat/permissions/)
-- [Classmethod — Test du `/sandbox` de Kiro CLI (mcpSandboxing, sandbox\_network)](https://dev.classmethod.jp/en/articles/kiro-cli-local-command-sandbox/)
+- [Classmethod — Testing Kiro CLI's `/sandbox` (mcpSandboxing, sandbox\_network)](https://dev.classmethod.jp/en/articles/kiro-cli-local-command-sandbox/)
 - [Claude Code — Sandboxing](https://code.claude.com/docs/en/sandboxing)
 - [Claude Code — Development containers](https://docs.claude.com/en/docs/claude-code/devcontainer)
 
-### Injection de credentials et CA par sandbox
+### Credential injection and per-sandbox CA
 
 - [Modal — Sandbox secret injection](https://modal.com/docs/guide/sandbox-secret-injection)
 - [Cloudflare — Credential injection and egress policies for Sandboxes](https://developers.cloudflare.com/changelog/post/2026-04-13-sandbox-outbound-workers-tls-auth/index.md)
-- [Lens — Credential bindings (CA éphémère)](https://docs.k8slens.dev/lens-agents/platform-admin/credential-bindings/)
+- [Lens — Credential bindings (ephemeral CA)](https://docs.k8slens.dev/lens-agents/platform-admin/credential-bindings/)
 - [Infisical — Agent Vault](https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents)
 - [agent-airlock](https://github.com/es617/agent-airlock)
-- [StackOne — Pourquoi un proxy ne limite pas ce que la clé peut faire](https://www.stackone.com/blog/ai-agent-sandbox-api-keys/)
+- [StackOne — Why a proxy does not limit what the key can do](https://www.stackone.com/blog/ai-agent-sandbox-api-keys/)
 
-### Projets open source (voir Prior art)
+### Open-source projects (see Prior art)
 
 - [agentcage](https://github.com/agentcage/agentcage) · [mattolson/agent-sandbox](https://github.com/mattolson/agent-sandbox) · [kuza/agentbox](https://github.com/kuza/agentbox) · [devgugga/agent-sandbox](https://github.com/devgugga/agent-sandbox) · [thomaspeklak/agent-sandbox](https://github.com/thomaspeklak/agent-sandbox) · [thenaithan/agent-sandbox-podman](https://github.com/thenaithan/agent-sandbox-podman) · [ftnilsson/dev-containers](https://github.com/ftnilsson/dev-containers) · [con/yolo](https://github.com/con/yolo) · [statox/claude-devcontainer](https://github.com/statox/claude-devcontainer) · [textcortex/claude-code-sandbox](https://github.com/textcortex/claude-code-sandbox)
-- [brood-box (Stacklok)](https://awesome.ecosyste.ms/projects/github.com%2Fstacklok%2Fbrood-box) · [container-use (Dagger)](https://container-use.com/) · [h5i](https://medium.com/@Koukyosyumei/h5i-a-lightweight-rootless-container-sandbox-for-claude-code-and-codex-e9a9eb0cf71e) · [microsandbox (guide Vultr)](https://docs.vultr.com/how-to-set-up-agent-sandboxing-on-vultr-cloud-compute) · [libkrun pour les sandboxes d'agents (iii)](https://iii.dev/blog/why-agent-sandboxes-are-converging-on-libkrun-not-firecracker/)
+- [brood-box (Stacklok)](https://awesome.ecosyste.ms/projects/github.com%2Fstacklok%2Fbrood-box) · [container-use (Dagger)](https://container-use.com/) · [h5i](https://medium.com/@Koukyosyumei/h5i-a-lightweight-rootless-container-sandbox-for-claude-code-and-codex-e9a9eb0cf71e) · [microsandbox (Vultr guide)](https://docs.vultr.com/how-to-set-up-agent-sandboxing-on-vultr-cloud-compute) · [libkrun for agent sandboxes (iii)](https://iii.dev/blog/why-agent-sandboxes-are-converging-on-libkrun-not-firecracker/)
 
 ### Kubernetes
 
-- [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) · [Blog Kubernetes — Running agents with Agent Sandbox](https://kubernetes.io/blog/2026/03/20/running-agents-on-kubernetes-with-agent-sandbox) · [Pulumi — Agent Sandbox (gVisor, Kata)](https://www.pulumi.com/blog/kubernetes-agent-sandbox)
-- [Red Hat OpenShift Dev Spaces — support Kiro en SSH](https://docs.redhat.com/en/documentation/red_hat_openshift_dev_spaces/3.26/html/release_notes_and_known_issues/technology-preview) · [Coder — Kiro CLI dans des workspaces](https://coder.com/blog/using-kiro-cli-with-coder-workspaces)
+- [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) · [Kubernetes blog — Running agents with Agent Sandbox](https://kubernetes.io/blog/2026/03/20/running-agents-on-kubernetes-with-agent-sandbox) · [Pulumi — Agent Sandbox (gVisor, Kata)](https://www.pulumi.com/blog/kubernetes-agent-sandbox)
+- [Red Hat OpenShift Dev Spaces — Kiro SSH support](https://docs.redhat.com/en/documentation/red_hat_openshift_dev_spaces/3.26/html/release_notes_and_known_issues/technology-preview) · [Coder — Kiro CLI in workspaces](https://coder.com/blog/using-kiro-cli-with-coder-workspaces)
