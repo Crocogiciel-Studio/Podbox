@@ -14,13 +14,20 @@ import (
 // homeRT is a fake agent container: a map of home files behind Exec.
 type homeRT struct {
 	runtime.Runtime
-	files map[string]string
-	specs []runtime.ExecSpec
-	fail  bool
+	files  map[string]string
+	specs  []runtime.ExecSpec
+	fail   bool
+	noView bool
 }
 
 func (h *homeRT) Exec(_ context.Context, _ string, s runtime.ExecSpec) (int, error) {
 	h.specs = append(h.specs, s)
+	if s.Command[0] == "test" {
+		if h.noView {
+			return 1, nil
+		}
+		return 0, nil
+	}
 	target := s.Command[len(s.Command)-1]
 	switch {
 	case h.fail:
@@ -97,6 +104,28 @@ func TestInstallContextExecFailureWarns(t *testing.T) {
 	m.installContext(context.Background(), Meta{Name: "s", Agent: "kiro"})
 	if len(*warns) != 1 {
 		t.Fatalf("%v", *warns)
+	}
+}
+
+func TestInstallContextOverCapLeavesFileAndWarns(t *testing.T) {
+	target := path.Join(agentHome, ".claude/CLAUDE.md")
+	big := strings.Repeat("a", maxRead+1)
+	m, rt, warns := newCtxManager(map[string]string{target: big})
+	m.installContext(context.Background(), Meta{Name: "s", Agent: "claude"})
+	if rt.files[target] != big || len(*warns) != 1 || !strings.Contains((*warns)[0], "agent context") {
+		t.Fatalf("warns %v, file changed: %v", *warns, rt.files[target] != big)
+	}
+}
+
+func TestInstallContextWarnsWithoutPolicyView(t *testing.T) {
+	m, rt, warns := newCtxManager(map[string]string{})
+	rt.noView = true
+	m.installContext(context.Background(), Meta{Name: "s", Agent: "claude"})
+	if len(*warns) != 1 || !strings.Contains((*warns)[0], "restart") {
+		t.Fatalf("%v", *warns)
+	}
+	if _, ok := rt.files[path.Join(agentHome, ".claude/CLAUDE.md")]; !ok {
+		t.Fatal("context not installed")
 	}
 }
 

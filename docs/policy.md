@@ -72,7 +72,7 @@ The agent reads its effective policy at `/run/podbox/policy.json`, read-only and
 }
 ```
 
-No layer, no warning and no `allow_private`. It is information for the agent; the proxy enforces the policy. See [agent context](security-model.md#agent-context).
+No layer, no warning and no `allow_private`. The context text is identical on every OS, but the view's `workspace` is the host path as is (for example `C:\...` on a Windows host). It is information for the agent; the proxy enforces the policy. See [agent context](security-model.md#agent-context).
 
 ## Project files are snapshotted
 

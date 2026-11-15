@@ -76,6 +76,13 @@ check "git status unchanged by the feature" cmp -s "$PROJ.before" "$PROJ.after"
 check "no podbox file in the project" test -z "$(find "$PROJ" -path "$PROJ/.git" -prune -o -type f -print)"
 rm -f "$PROJ.before" "$PROJ.after"
 
+echo "== symlinked CLAUDE.md"
+sx "$NAME" "rm -f $CLAUDE_MD; printf 'linked\n' > /home/agent/real-claude.md; chmod 600 /home/agent/real-claude.md; ln -s /home/agent/real-claude.md $CLAUDE_MD"
+check "restart" restart "$NAME"
+check "CLAUDE.md is still a symbolic link" sx "$NAME" "test -L $CLAUDE_MD"
+check "the block went to the link target, text and mode kept" sx "$NAME" "grep -q linked /home/agent/real-claude.md && grep -q 'podbox:begin' /home/agent/real-claude.md && test \"\$(stat -c %a /home/agent/real-claude.md)\" = 600"
+sx "$NAME" "rm -f $CLAUDE_MD /home/agent/real-claude.md"
+
 echo "== unmergeable CLAUDE.md"
 sx "$NAME" "printf 'x\n<!-- podbox:begin -->\nhalf\n' > $CLAUDE_MD"
 sx "$NAME" "cat $CLAUDE_MD" >"$PROJ3/before"

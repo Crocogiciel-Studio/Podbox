@@ -17,9 +17,24 @@ const agentHome = "/home/agent"
 // exitAbsent is the exit code of the read script for a missing file.
 const exitAbsent = 3
 
+// maxRead bounds what is read from a file the agent controls.
+const maxRead = 1 << 20
+
+// viewFile is the policy view inside the agent container.
+const viewFile = agentMount + "/" + AgentPolicyFile
+
 const (
-	readScript  = `[ -e "$1" ] || exit 3; cat "$1"`
-	writeScript = `mkdir -p "$(dirname "$1")" && cat > "$1.podbox-tmp" && mv "$1.podbox-tmp" "$1"`
+	// The read stops one byte past maxRead, so over the cap is detectable.
+	readScript = `[ -e "$1" ] || exit 3; head -c 1048577 "$1"`
+	// The write goes through a per-call temporary file next to the real
+	// target (a symbolic link is followed, not replaced) and keeps its mode.
+	writeScript = `mkdir -p "$(dirname "$1")" || exit 1
+f=$(readlink -f "$1") || exit 1
+tmp="$f.podbox-tmp.$$"
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp" || exit 1
+if [ -e "$f" ]; then chmod "$(stat -c %a "$f")" "$tmp" || exit 1; fi
+mv "$tmp" "$f"`
 )
 
 // installContext writes the agent's context into its home, merged with
@@ -29,6 +44,16 @@ func (m *Manager) installContext(ctx context.Context, meta Meta) {
 		if err := m.installFile(ctx, meta, f); err != nil {
 			m.Warn("agent context %s of %s not installed: %v", f.Path, meta.Name, err)
 		}
+	}
+	if len(agentctx.Files(meta.Agent)) == 0 {
+		return
+	}
+	// An agent container created before the policy view lacks the mount.
+	code, err := m.RT.Exec(ctx, agentContainer(meta.Name), runtime.ExecSpec{
+		Command: []string{"test", "-r", viewFile}, User: AgentUser, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
+	})
+	if err != nil || code != 0 {
+		m.Warn("restart %s to get the policy view at %s", meta.Name, viewFile)
 	}
 }
 
@@ -71,6 +96,9 @@ func (m *Manager) readHome(ctx context.Context, meta Meta, target string) (strin
 		return "", nil
 	case code != 0:
 		return "", fmt.Errorf("read %s: exit %d: %s", target, code, strings.TrimSpace(stderr.String()))
+	}
+	if out.Len() > maxRead {
+		return "", fmt.Errorf("%s is larger than %d bytes", target, maxRead)
 	}
 	return out.String(), nil
 }
