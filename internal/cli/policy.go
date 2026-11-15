@@ -33,7 +33,7 @@ func (a *app) policyCmd() *cobra.Command {
 			return a.out.Print(e, func(w io.Writer) { printPolicy(w, e) })
 		},
 	})
-	cmd.AddCommand(a.policySetCmd("allow", true), a.policySetCmd("deny", false), a.policyReloadCmd())
+	cmd.AddCommand(a.policySetCmd("allow", true), a.policySetCmd("deny", false), a.policyReloadCmd(), a.policyLogCmd())
 	return cmd
 }
 

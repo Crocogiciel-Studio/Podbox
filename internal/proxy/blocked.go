@@ -14,10 +14,20 @@ const BlockedHeader = "X-Podbox-Blocked"
 // NotAllowedBody is the agent-readable refusal for a host and port outside
 // the allowlist.
 func NotAllowedBody(sandbox, host string, port int) string {
-	if slices.Contains(policy.DefaultPorts, port) {
-		return fmt.Sprintf("Blocked by podbox network policy: host %q is not allowed.\nAsk the user to run: podbox policy allow %s %s\n", host, sandbox, host)
+	what := fmt.Sprintf("host %q is not allowed", host)
+	if !slices.Contains(policy.DefaultPorts, port) {
+		what += fmt.Sprintf(" on port %d", port)
 	}
-	return fmt.Sprintf("Blocked by podbox network policy: host %q is not allowed on port %d.\nAsk the user to run: podbox policy allow %s %s --port %d\n", host, port, sandbox, host, port)
+	return fmt.Sprintf("Blocked by podbox network policy: %s.\nAsk the user to run: %s\n", what, AllowCommand(sandbox, host, port))
+}
+
+// AllowCommand is the host command that allows host on port.
+func AllowCommand(sandbox, host string, port int) string {
+	c := "podbox policy allow " + sandbox + " " + host
+	if !slices.Contains(policy.DefaultPorts, port) {
+		c += fmt.Sprintf(" --port %d", port)
+	}
+	return c
 }
 
 func writeNotAllowed(w http.ResponseWriter, sandbox, host string, port int) {

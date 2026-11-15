@@ -461,6 +461,21 @@ func (m *Manager) Exec(ctx context.Context, name string, cmd []string, tio IO) (
 	})
 }
 
+// ProxyLog writes the decision log of a sandbox's running proxy.
+func (m *Manager) ProxyLog(ctx context.Context, name string, spec runtime.LogsSpec) error {
+	if _, err := m.status(ctx, name); err != nil {
+		return err
+	}
+	c, err := m.RT.ContainerInspect(ctx, proxyContainer(name))
+	if errors.Is(err, runtime.ErrNotFound) || err == nil && !c.Running() {
+		return fmt.Errorf("%w: %s (run podbox start %s)", ErrNotRunning, name, name)
+	}
+	if err != nil {
+		return err
+	}
+	return m.RT.Logs(ctx, proxyContainer(name), spec)
+}
+
 // Attach opens an agent session in a running sandbox.
 func (m *Manager) Attach(ctx context.Context, name string, tio IO) (int, error) {
 	meta, err := m.Store.Load(name)

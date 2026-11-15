@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -93,8 +94,10 @@ func (a *app) runCmd() *cobra.Command {
 				return err
 			}
 			a.hookNotice(m, name)
+			start := time.Now()
 			code, err := m.Attach(cmd.Context(), name, terminal())
 			a.gitCheck(m, name)
+			a.blockedNotice(cmd.Context(), m, name, start)
 			return exitWith(code, err)
 		},
 	}

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"time"
+
 	"github.com/spf13/cobra"
 
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
@@ -36,8 +38,10 @@ func (a *app) attachCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			start := time.Now()
 			code, err := m.Attach(cmd.Context(), args[0], terminal())
 			a.gitCheck(m, args[0])
+			a.blockedNotice(cmd.Context(), m, args[0], start)
 			return exitWith(code, err)
 		},
 	}

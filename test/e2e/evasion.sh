@@ -143,6 +143,7 @@ rm -f "$PROJ/.git/commondir"
 check "git-check --accept re-records" sh -c "'$PODBOX' git-check '$NAME' --accept >/dev/null"
 check "git-check exits 0 after removal and accept" test "$(git_check_code)" = 0
 check "ls JSON reports a clean .git after accept" ls_json_clean
+check "policy log of a stopped sandbox exits 1" test "$(pb policy log "$NAME" >/dev/null 2>&1; echo $?)" = 1
 check "start $NAME after the stop" q pb start "$NAME" -o json
 
 echo "== worktree hook files"
@@ -313,6 +314,14 @@ echo "== allowlist and hot reload"
 body=$(sx "$NAME" "curl -s --max-time 10 http://$EXTRA/")
 check "non-allowlisted host gets the readable refusal" grep -q "Ask the user to run: podbox policy allow $NAME $EXTRA" <<<"$body"
 denied "non-allowlisted host over TLS" "$NAME" "curl -sf --max-time 10 https://$EXTRA/"
+log_json_denies() { pb policy log "$NAME" --denied -o json 2>/dev/null | jqe --arg h "$EXTRA" 'any(.host == $h and .port == "443" and .decision == "deny") and all(.decision == "deny")'; }
+check "policy log --denied JSON lists the refused HTTPS host" log_json_denies
+check "policy log text prints the allow command" grep -qF "→ podbox policy allow $NAME $EXTRA" <<<"$(pb policy log "$NAME" --denied 2>/dev/null)"
+session_err() { sleep 1; printf '%s\n' "$1" | pb attach "$NAME" >/dev/null 2>"$WORK/attach.err"; cat "$WORK/attach.err"; }
+check "attach summarises the requests blocked during the session" grep -qE "^podbox: [0-9]+ request\(s\) blocked during this session — see: podbox policy log $NAME --denied\$" <<<"$(session_err "curl -s --max-time 10 https://$EXTRA/ >/dev/null")"
+check "attach without refusals prints no summary" test -z "$(session_err true | grep 'blocked during this session')"
+log_code() { pb policy log "$1" >/dev/null 2>&1; echo $?; }
+check "policy log of an unknown sandbox exits 4" test "$(log_code e2e-missing)" = 4
 pb policy allow "$NAME" "$EXTRA" >/dev/null
 check "allowed after policy allow, without restart" eventually 5 reached "$NAME" "https://$EXTRA/"
 pb policy deny "$NAME" "$EXTRA" >/dev/null

@@ -22,7 +22,9 @@
 2. Destination guard: the proxy resolves the name once, checks every address and dials the checked address (no DNS rebinding). Loopback, link-local, cloud metadata (`169.254.169.254`, `fd00:ec2::254`), unspecified, multicast and reserved ranges are always refused; private ranges (RFC 1918, ULA, CGNAT) only with `allow_private` on the matching rule.
 3. Upstream: with a corporate proxy, the name is still resolved and checked locally; the CONNECT sent upstream carries the name so the corporate proxy applies its own rules. When the name does not resolve locally (DNS-less networks), it is forwarded by name. The agent never learns the upstream address or credentials: they are passed to the proxy container only.
 
-Each decision is logged as one JSON line on the proxy's stdout (`podman logs podbox-<name>-proxy`).
+Each decision is logged as one JSON line on the proxy's stdout, read by `podbox policy log <name>`.
+
+The readable refusal (`Blocked by podbox network policy ... Ask the user to run: podbox policy allow ...`) reaches plain HTTP clients only. An HTTPS request is a `CONNECT`: clients such as curl, npm and pip report the proxy's `403` and drop its body, so neither the agent nor you see the host. `podbox policy log <name> --denied` is the way to find it, and `run`/`attach` point at it after a session with refusals.
 
 ## Refused workspaces
 

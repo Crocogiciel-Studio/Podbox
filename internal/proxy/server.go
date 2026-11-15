@@ -119,22 +119,7 @@ func (s *Server) authorized(r *http.Request) bool {
 	return err == nil && subtle.ConstantTimeCompare(got, []byte(s.cfg.Auth)) == 1
 }
 
-// decision is what the logs record for one request.
-type decision struct {
-	Time     string `json:"time"`
-	Sandbox  string `json:"sandbox,omitempty"`
-	Method   string `json:"method"`
-	Host     string `json:"host"`
-	Port     string `json:"port"`
-	Decision string `json:"decision"`
-	Reason   string `json:"reason,omitempty"`
-	Rule     string `json:"rule,omitempty"`
-	Layer    string `json:"layer,omitempty"`
-	IP       string `json:"ip,omitempty"`
-	Via      string `json:"via,omitempty"`
-}
-
-func (s *Server) logDecision(d decision) {
+func (s *Server) logDecision(d Entry) {
 	d.Time = time.Now().UTC().Format(time.RFC3339Nano)
 	if p := s.policy.Load(); p != nil {
 		d.Sandbox = p.Sandbox
@@ -167,7 +152,7 @@ type route struct {
 func (s *Server) authorize(ctx context.Context, w http.ResponseWriter, method, host, port string) (route, bool) {
 	host = policy.NormalizeHost(host)
 	rt := route{host: host, port: port}
-	d := decision{Method: method, Host: host, Port: port, Decision: "deny"}
+	d := Entry{Method: method, Host: host, Port: port, Decision: "deny"}
 	if !s.cfg.AllowAll {
 		pn, _ := strconv.Atoi(port) // an invalid port is 0, which no rule covers
 		pd := s.policy.Load().Decide(host, pn)

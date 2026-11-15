@@ -32,16 +32,19 @@ podbox run claude          # builds images on first use, then opens Claude Code
 
 Other agents: `podbox run kiro` (experimental, unverified), `podbox run shell` (bash, for inspection).
 
-When the agent hits a host outside the allowlist it receives:
+When the agent hits a host outside the allowlist over plain HTTP it receives:
 
 ```
 Blocked by podbox network policy: host "pypi.example.org" is not allowed.
 Ask the user to run: podbox policy allow claude-my-project pypi.example.org
 ```
 
+Over HTTPS, curl, npm or pip show only `403`. `podbox policy log` shows what was refused and the command that allows it, and `run`/`attach` print `podbox: N request(s) blocked during this session — see: podbox policy log <name> --denied` when the session had refusals.
+
 From another terminal on the host:
 
 ```sh
+podbox policy log claude-my-project --denied      # refused requests, each with its podbox policy allow command
 podbox policy allow claude-my-project pypi.example.org            # this sandbox, applied within a second
 podbox policy allow claude-my-project pypi.example.org --scope project   # writes .podbox/policy.yaml
 podbox policy reload claude-my-project      # apply hand edits to .podbox/policy.yaml and .sandboxignore
@@ -61,6 +64,7 @@ podbox policy show claude-my-project
 | `attach <name>` | open a new agent session in a running sandbox |
 | `git-check <name> [--accept]` | compare `.git` with the fingerprint taken at creation, exit 6 on suspicious changes; `--accept` re-records it |
 | `policy show\|allow\|deny\|reload <name> [host]` | inspect and change the allowlist from the host; `reload --forget-missing` also drops recorded masks found nowhere |
+| `policy log <name> [--denied] [--follow] [--since 10m]` | the proxy's decisions, with the fix command for each refusal; exit 4 for an unknown sandbox, 1 when it is not running |
 | `image build <image>... [--force]` / `image ls` | build `proxy`, `base`, `claude`, `kiro`, `shell` |
 | `doctor [--pull]` | check prerequisites, including that `images.base` is present; `--pull` pulls it when absent |
 | `version` | build information |
@@ -102,7 +106,7 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 
 - Containers share the host kernel; a kernel exploit escapes the sandbox.
 - Allowlisted hosts are an exfiltration channel: allow only what the task needs.
-- HTTPS is not decrypted in v0.1: rules apply to host names only, and refusals of `CONNECT` requests are a bare `403` for most clients (plain-HTTP requests show the message).
+- HTTPS is not decrypted in v0.1: rules apply to host names only, and refusals of `CONNECT` requests are a bare `403` for most clients (plain-HTTP requests show the message); `podbox policy log` names them.
 - Behind a TLS-intercepting corporate proxy, the agent sees and trusts the corporate CA.
 - Masks are resolved when the agent container is (re)created; files created later are not masked until `stop` + `start`. Writes into masked directories are refused. Masks follow their files when a parent directory is renamed (inode tracking; not on Windows hosts).
 - An allowlisted host is reachable on ports 80 and 443 only; list other ports with `ports:` on the rule or `podbox policy allow <name> <host> --port N`.

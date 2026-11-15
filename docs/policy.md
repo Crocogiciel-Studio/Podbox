@@ -42,7 +42,17 @@ podbox policy show <sandbox>                       # rules with their layer, war
 podbox policy allow <sandbox> <host> [--port N]... [--scope session|project]
 podbox policy deny <sandbox> <host> [--port N]... [--scope session|project]
 podbox policy reload <sandbox>                     # re-read project files, print and apply the changes
+podbox policy log <sandbox> [--denied] [--follow] [--since 10m]
 ```
+
+`policy log` reads the running proxy's decision log, one line per request:
+
+```
+2026-11-15 10:42:07  DENY   CONNECT pypi.example.org:443  (not in the allowlist)  → podbox policy allow claude-my-project pypi.example.org
+2026-11-15 10:42:09  ALLOW  CONNECT registry.npmjs.org:443  (allow rule registry.npmjs.org, defaults layer)
+```
+
+Each refusal ends with its fix: the `policy allow` command (with `--port N` off ports 80 and 443), the deny rule to remove from a global or project layer, or `allow_private` for a private address. `--denied` keeps refusals only, `--since` takes a duration, `--follow` keeps printing. `-o json` prints an array of decisions (`time`, `method`, `host`, `port`, `decision`, `reason`, `rule`, `layer`, `ip`, `via`, `fix`), one object per line with `--follow`. Exit code 4 for an unknown sandbox, 1 when its proxy is not running. After an agent session, `run` and `attach` print on stderr how many requests were refused during it.
 
 Changes rewrite the effective file atomically; the running proxy applies them within about a second. Edits to the global file by hand are picked up at the next `policy` change or `start`.
 

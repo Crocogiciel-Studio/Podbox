@@ -36,8 +36,18 @@ type Runtime interface {
 	ContainerRemove(ctx context.Context, name string) error
 	ContainerInspect(ctx context.Context, name string) (Container, error)
 	ContainerList(ctx context.Context, label string) ([]Container, error)
+	// Logs writes a container's stdout log to spec.Stdout; with Follow it
+	// streams until ctx ends.
+	Logs(ctx context.Context, name string, spec LogsSpec) error
 	// Exec runs a command in a running container and returns its exit code.
 	Exec(ctx context.Context, name string, spec ExecSpec) (int, error)
+}
+
+// LogsSpec selects a container's log lines.
+type LogsSpec struct {
+	Follow bool
+	Since  string // podman --since: a duration (10m) or an RFC 3339 time
+	Stdout io.Writer
 }
 
 // Info describes the engine and its host.

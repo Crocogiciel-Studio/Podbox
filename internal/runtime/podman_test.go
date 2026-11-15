@@ -150,3 +150,15 @@ func TestBuildArgs(t *testing.T) {
 		t.Errorf("argv %q, want %q", got, want)
 	}
 }
+
+func TestLogs(t *testing.T) {
+	p, log := fakePodman(t)
+	t.Setenv("FAKE_STDOUT", "line\n")
+	var out strings.Builder
+	if err := p.Logs(context.Background(), "podbox-x-proxy", LogsSpec{Follow: true, Since: "10m", Stdout: &out}); err != nil || out.String() != "line\n" {
+		t.Fatalf("logs: %v %q", err, out.String())
+	}
+	if got := recorded(t, log); len(got) != 1 || got[0] != "logs --follow --since 10m podbox-x-proxy" {
+		t.Errorf("argv %q", got)
+	}
+}

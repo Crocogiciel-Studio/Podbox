@@ -371,6 +371,26 @@ func (p *Podman) Exec(ctx context.Context, name string, s ExecSpec) (int, error)
 	return p.run.interactive(ctx, p.Bin, ExecArgs(name, s), streams{Stdin: s.Stdin, Stdout: s.Stdout, Stderr: s.Stderr})
 }
 
+// logsArgs builds the `podman logs` argv.
+func logsArgs(name string, s LogsSpec) []string {
+	args := []string{"logs"}
+	if s.Follow {
+		args = append(args, "--follow")
+	}
+	if s.Since != "" {
+		args = append(args, "--since", s.Since)
+	}
+	return append(args, name)
+}
+
+func (p *Podman) Logs(ctx context.Context, name string, s LogsSpec) error {
+	err := p.run.stream(ctx, p.Bin, logsArgs(name, s), streams{Stdout: s.Stdout})
+	if s.Follow && ctx.Err() != nil {
+		return nil // interrupted on purpose
+	}
+	return err
+}
+
 func (p *Podman) exists(ctx context.Context, args ...string) (bool, error) {
 	code, err := p.run.interactive(ctx, p.Bin, args, streams{})
 	if err != nil {
