@@ -117,9 +117,10 @@ tampering() { grep -q "GIT DIRECTORY TAMPERING SUSPECTED" <<<"$1"; }
 commit_quiet() { local err; err=$(sx "$NAME" "echo more >>src/readme.txt && git checkout -qb e2e-branch && $GITENV git commit -qam agent2" 2>&1 >/dev/null) || return 1; ! tampering "$err"; }
 git_check_code() { pb git-check "$NAME" >/dev/null 2>&1; echo $?; }
 ls_tampering() { tampering "$(pb ls 2>&1 >/dev/null)"; }
+ls_json_clean() { pb ls -o json 2>/dev/null | jq -e ".[] | select(.name == \"$NAME\") | .git_integrity == null or .git_integrity.ok == true" >/dev/null; }
 ls_json_flags() { pb ls -o json 2>/dev/null | jq -e ".[] | select(.name == \"$NAME\") | .git_integrity.ok == false and (.git_integrity.findings[0].path == \".git/commondir\")" >/dev/null; }
 check "normal commit and branch in the sandbox print no git warning" commit_quiet
-blocked "ls warns after a normal commit" ls_tampering
+check "ls JSON reports a clean .git after a normal commit" ls_json_clean
 check "git-check exits 0 after a normal commit" test "$(git_check_code)" = 0
 check "agent writes .git/commondir" sx "$NAME" "echo /tmp/evil >'$PROJ/.git/commondir'"
 check "ls warns about .git/commondir" ls_tampering
@@ -133,7 +134,7 @@ check "git-check prints the git warning once" test "$(pb git-check "$NAME" 2>&1 
 rm -f "$PROJ/.git/commondir"
 check "git-check --accept re-records" sh -c "'$PODBOX' git-check '$NAME' --accept >/dev/null"
 check "git-check exits 0 after removal and accept" test "$(git_check_code)" = 0
-blocked "ls warns after accept" ls_tampering
+check "ls JSON reports a clean .git after accept" ls_json_clean
 check "start $NAME after the stop" q pb start "$NAME" -o json
 
 echo "== worktree hook files"
@@ -316,6 +317,7 @@ proxy_log() { podman logs "podbox-$NAME-proxy" 2>&1 | grep "\"host\":\"$ATTACK\"
 probe() { sx "$NAME" "curl -s -o /dev/null --max-time 10 http://$ATTACK/"; }
 denied_only() { probe; proxy_log | grep -q '"decision":"deny"' && ! proxy_log | grep -q '"decision":"allow"'; }
 allowed_by_project() { probe; proxy_log | grep '"decision":"allow"' | grep -q '"layer":"project"'; }
+ls_project_clean() { pb ls -o json 2>/dev/null | jqe --arg n "$NAME" '.[] | select(.name == $n) | (.project_changed // []) | length == 0'; }
 ls_warns() { pb ls -o json 2>/dev/null | jqe --arg n "$NAME" '.[] | select(.name == $n) | (.project_changed // []) | length > 0'; }
 check ".sandboxignore pattern is masked" sx "$NAME" "[ ! -s '$PROJ/notes.txt' ]"
 denied "agent edits .sandboxignore" "$NAME" "echo >'$PROJ/.sandboxignore'"
@@ -334,7 +336,7 @@ check "policy reload shows the removed pattern" jqe '.ignore_removed == ["notes.
 check "reloaded project rule applies without restart" eventually 10 allowed_by_project
 rm -rf "$PROJ/.podbox" && echo 'notes.txt' >"$PROJ/.sandboxignore"
 check "policy reload after restoring the project files" q pb policy reload "$NAME" -o json
-blocked "ls still warns after reload" ls_warns
+check "ls JSON reports no project change after reload" ls_project_clean
 
 echo "== project policy reached through an agent symlink (F1)"
 # The agent links .podbox to the podbox config directory; policy allow
