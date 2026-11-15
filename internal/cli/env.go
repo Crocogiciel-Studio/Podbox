@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	goruntime "runtime"
 
 	"github.com/Crocogiciel-Studio/podbox/internal/config"
 	"github.com/Crocogiciel-Studio/podbox/internal/images"
@@ -46,6 +48,6 @@ func (a *app) engine(ctx context.Context) (*engine, error) {
 	if err != nil {
 		return nil, output.Wrap(output.ExitPrereq, err, "podman unusable (run `podbox doctor`)")
 	}
-	b := &images.Builder{RT: rt, Base: cfg.Images.Base, CAFile: cfg.CAFile, Arch: info.Arch, Progress: a.out.Err}
+	b := &images.Builder{RT: rt, Base: cfg.Images.Base, CAFile: cfg.CAFile, Arch: info.Arch, Progress: a.out.Err, GOOS: goruntime.GOOS, Getenv: os.Getenv}
 	return &engine{rt: rt, info: info, cfg: cfg, paths: paths, store: st, builder: b}, nil
 }

@@ -64,6 +64,10 @@ type Builder struct {
 	CAFile   string // optional PEM trusted in agent images
 	Arch     string // engine architecture (amd64, arm64)
 	Progress io.Writer
+	// GOOS and Getenv give the host proxy variables to builds; a nil
+	// Getenv leaves podman's defaults.
+	GOOS   string
+	Getenv func(string) string
 }
 
 func def(name string) []byte {
@@ -185,6 +189,7 @@ func (b *Builder) Ensure(ctx context.Context, k Kind, force bool) (string, error
 	if baseArg != "" {
 		spec.BuildArgs = map[string]string{"BASE": baseArg}
 	}
+	buildProxy(&spec, b.GOOS, b.Getenv)
 	if b.Progress != nil {
 		fmt.Fprintf(b.Progress, "building %s\n", ref)
 	}

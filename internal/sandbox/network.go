@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"net/url"
 	"strings"
 
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
@@ -48,7 +47,7 @@ func proxyIP(n runtime.Network) (string, error) {
 
 // Upstream returns the parent proxy for the sandbox proxy: config first,
 // then the host proxy variables. Host loopback addresses are rewritten to
-// the host as seen from containers.
+// the host as seen from containers (runtime.ToHost).
 func Upstream(configured string, getenv func(string) string) string {
 	v := configured
 	if v == "none" {
@@ -66,17 +65,6 @@ func Upstream(configured string, getenv func(string) string) string {
 	if !strings.Contains(v, "://") {
 		v = "http://" + v
 	}
-	u, err := url.Parse(v)
-	if err != nil {
-		return v
-	}
-	switch h := u.Hostname(); {
-	case h == "localhost" || strings.HasPrefix(h, "127.") || h == "::1":
-		host := "host.containers.internal"
-		if p := u.Port(); p != "" {
-			host += ":" + p
-		}
-		u.Host = host
-	}
-	return u.String()
+	v, _ = runtime.ToHost(v)
+	return v
 }

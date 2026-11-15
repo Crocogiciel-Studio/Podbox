@@ -79,6 +79,8 @@ upstream_proxy: http://user:pass@proxy.corp:3128   # default: host HTTPS_PROXY; 
 limits: { cpus: "4", memory: 8g, pids: 2048 }      # applied when cgroup controllers are delegated
 ```
 
+Image builds use the host proxy variables. A proxy on the host loopback (px, cntlm, a Zscaler client: `HTTPS_PROXY=http://127.0.0.1:...`) is reached as `host.containers.internal` from the podman machine on macOS and Windows; on Linux such builds run on the host network, since rootless build steps otherwise get their own network namespace.
+
 Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxignore` (gitignore syntax, extra masks). podbox reads them once at `create`, printing each imported rule and pattern, and keeps a copy in the sandbox state; later edits, by you or the agent, apply only after you review them and run `podbox policy reload <name>`. Inside the sandbox they are read-only.
 
 ## Exit codes

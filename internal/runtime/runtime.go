@@ -80,7 +80,8 @@ type BuildSpec struct {
 	Labels     map[string]string
 	Stdout     io.Writer
 	Stderr     io.Writer
-	NoProxyEnv bool // do not forward host proxy variables into the build
+	NoProxyEnv bool   // do not forward the engine's proxy variables into the build
+	Network    string // RUN step network mode; empty is the engine default
 }
 
 // Image is a local image.

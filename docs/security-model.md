@@ -75,6 +75,7 @@ The check runs when podbox does: a git command you run on the host before any po
 ## What it does not protect against
 
 - Kernel or runtime exploits: containers share the host kernel.
+- Image builds on Linux behind a host-loopback proxy run on the host network, so build steps (podbox's own Containerfiles, which install the agent CLI from its registry) can reach host loopback services. Built images do not keep the proxy variables.
 - Exfiltration through allowlisted hosts: anything the agent can reach can receive data.
 - A TLS-intercepting corporate proxy: its CA is visible to and trusted by the agent (hiding it needs TLS interception in the sandbox, planned for v0.2).
 - Files created in the project after the agent container was created are not masked until it is recreated (`stop` + `start`).

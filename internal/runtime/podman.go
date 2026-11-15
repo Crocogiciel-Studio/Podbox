@@ -121,6 +121,9 @@ func (p *Podman) ImageBuild(ctx context.Context, s BuildSpec) error {
 	if s.NoProxyEnv {
 		args = append(args, "--http-proxy=false")
 	}
+	if s.Network != "" {
+		args = append(args, "--network="+s.Network)
+	}
 	for _, k := range sortedKeys(s.BuildArgs) {
 		args = append(args, "--build-arg", k+"="+s.BuildArgs[k])
 	}

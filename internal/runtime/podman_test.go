@@ -138,3 +138,15 @@ func TestLimitsDelegated(t *testing.T) {
 		t.Fatal("controller parsing")
 	}
 }
+
+func TestBuildArgs(t *testing.T) {
+	p, log := fakePodman(t)
+	if err := p.ImageBuild(context.Background(), BuildSpec{Tag: "t", File: "f", Context: "c", NoProxyEnv: true, Network: "host",
+		BuildArgs: map[string]string{"HTTPS_PROXY": "http://host.containers.internal:3128"}}); err != nil {
+		t.Fatal(err)
+	}
+	want := "build -t t -f f --http-proxy=false --network=host --build-arg HTTPS_PROXY=http://host.containers.internal:3128 c"
+	if got := recorded(t, log); len(got) != 1 || got[0] != want {
+		t.Errorf("argv %q, want %q", got, want)
+	}
+}
