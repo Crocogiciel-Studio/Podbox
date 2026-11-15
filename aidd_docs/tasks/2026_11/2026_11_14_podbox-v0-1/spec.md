@@ -20,7 +20,12 @@ Un développeur lance Claude Code ou Kiro en mode autonome dans une sandbox Podm
 - Les destinations résolues en loopback, link-local ou métadonnées cloud sont toujours refusées ; celles en IP privée sont refusées sauf règle qui les autorise explicitement (services internes d'entreprise).
 - Les variables de proxy de l'hôte ne sont jamais transmises au conteneur agent.
 - Conteneur agent durci : utilisateur non root, toutes les capabilities retirées, pas d'élévation de privilèges, seccomp par défaut, limites CPU/RAM/PIDs, jamais privilégié, jamais de socket Podman ou Docker monté, aucun montage hôte hors workspace et volume d'auth.
-- Mode `shared` : le projet est monté en lecture-écriture ; les chemins sensibles (`.env*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.kube/`, `.npmrc`, `.pypirc`, `.netrc`, `.docker/config.json`, `.git/hooks/`) sont toujours masqués, sans possibilité d'annulation ; `.sandboxignore` (syntaxe gitignore) ajoute des masques.
+- Mode `shared` : le projet est monté en lecture-écriture ; les chemins sensibles (`.env*`, `*.pem`, `*.key`, `id_*`, `.ssh/`, `.aws/`, `.kube/`, `.npmrc`, `.pypirc`, `.netrc`, `.docker/config.json`) sont toujours masqués, sans possibilité d'annulation, y compris après renommage, lien physique ou changement de droits par l'agent (en cas de doute, la sandbox refuse de démarrer) ; `.sandboxignore` (syntaxe gitignore) ajoute des masques.
+- Les hooks git du projet s'exécutent aussi pour les commits de l'agent ; l'agent ne peut ni modifier ni ajouter un hook dans `.git/hooks/`, ni modifier `.git/config`.
+- Ce que l'agent change dans `.git` et qui pourrait faire exécuter du code par le git de l'hôte (redirection `commondir`, worktrees, alternates, fichiers de hooks du projet) est détecté et signalé à l'humain, sans être bloqué.
+- La configuration de projet (`.podbox/policy.yaml`, `.sandboxignore`) n'est prise en compte qu'à la création ou sur relecture explicite par l'humain ; podbox ne suit jamais côté hôte un lien symbolique du workspace.
+- Un workspace égal au home de l'utilisateur, l'un de ses parents, ou contenant la configuration ou l'état de podbox, est refusé.
+- Une règle d'allowlist n'ouvre que les ports 80 et 443, sauf ports listés explicitement.
 - L'authentification de l'agent (session Claude Code, session Kiro) persiste entre deux lancements dans un volume dédié par agent, jamais dans le `$HOME` de l'hôte.
 - Les images agent (Claude Code, Kiro) se construisent sur le poste à partir de définitions livrées avec `podbox`, sur une image de base configurable (registry interne) ; le proxy ne dépend d'aucun registry.
 - Toute commande accepte `--output json` et renvoie un code de sortie stable et documenté.
@@ -64,4 +69,5 @@ None
 
 - Étude de faisabilité complète : [feasibility-study.md](./feasibility-study.md).
 - Roadmap révisée et arbitrages (allowlist sans déchiffrement, agent sans DNS, proxy embarqué, chaînage d'entreprise avancé en v0.1) : décidés en session d'onboarding le 2026-11-14.
+- Amendements du 2026-11-15 (décisions utilisateur prises pendant les 7 tours de validation) : hooks git exécutés en lecture seule au lieu d'être masqués ; altérations de `.git` détectées plutôt que bloquées (`podbox git-check`, codes de sortie 6 et 7) ; configuration de projet figée à la création ; workspaces dangereux refusés ; ports 80/443 par défaut. Détail : [run.md](./run.md) et `docs/security-model.md`.
 - Constats M0 (Podman 5.7, rootless, Linux, derrière un proxy obligatoire) : Podman transmet par défaut les variables de proxy de l'hôte aux conteneurs ; un réseau `--internal --disable-dns` hérite quand même du `resolv.conf` de l'hôte ; une fois ces deux points neutralisés, le conteneur interne n'a ni egress direct, ni DNS, ni accès au loopback ou à la passerelle de l'hôte, et joint le conteneur proxy, lequel sort via le proxy amont.

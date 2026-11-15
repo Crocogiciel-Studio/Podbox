@@ -40,3 +40,22 @@
 | 7.3b | evasion.sh upstream section; lifecycle.sh home marker | allowed host via allow-all basic-auth upstream chained to the real proxy; marker survives rm + create |
 | 7.4 | README, docs/security-model.md, docs/policy.md | install → doctor → run → policy allow walk-through |
 | 7.5 | `make lint test cross e2e` | all green |
+
+## Run 2 — Check zone (validation rounds 2–7, review)
+
+- Head: `7965284` (validated, round 7)
+- Kiro: image builds once `prod.download.cli.kiro.dev` was allowed; `kiro-cli` 3.3.0, `--trust-all-tools` confirmed; observed hosts `cognito-identity.us-east-1.amazonaws.com`, `client-telemetry.us-east-1.amazonaws.com` added to defaults (`04f6c72`). Login still unverified (needs human credentials).
+
+| Round | Finding | Fix |
+| ----- | ------- | --- |
+| 1 | agent edits `.podbox/policy.yaml` / `.sandboxignore` in the rw workspace, applied at next recompilation | `958fc63` snapshot at create, `policy reload`, ro mounts, drift warning |
+| 2 | workspace containing podbox config/state → agent rewrites the effective policy; `.git/config` hooksPath → host code exec | `51b4634` unsafe workspaces refused; `.git/config` ro, `.git` bound onto itself |
+| 2 | `.git/commondir` redirect → host code exec | `57947a6` fingerprint + `podbox git-check` (detected, not blocked — user decision) |
+| — | hooks masked = agent bypasses project controls | `248819e` `.git/hooks` ro (hooks run), worktree hook files fingerprinted + launch info (user decision) |
+| 3 | mask lost when the agent renames a parent dir + restart; linked worktree commondir undetected; any port on allowed hosts | `2c179f6` inode-tracked masks, worktree fingerprint, 80/443 default |
+| 4 | host-side `policy allow --scope project` follows an agent-made `.podbox` symlink into the global policy | `b45f3dd` all host-side workspace I/O through `os.Root`, mount sources re-checked |
+| 5 | `chmod 000` on a parent unmasks a recorded secret | `a8eeb07` fail closed (exit 7), `--forget-missing` |
+| 6 | panic with hard links; hard link sorted first left unmasked | `7965284` two-pass resolution, all links masked, refused start tears down, transactional reload |
+| 7 | — | PASS: `make lint test`, `go test -race ./...`, `make cross`, `make e2e` (evasion 154/0, lifecycle 24/0), ~7 min fuzz of masks |
+
+Still unverified: interactive Claude/Kiro login, GitHub CI e2e run, macOS/Windows runtime, resource limits with cgroup delegation.
