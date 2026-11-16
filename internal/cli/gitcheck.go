@@ -34,7 +34,7 @@ func (a *app) gitCheckCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if meta.IsClone() {
+			if !meta.Guard().Active() {
 				return a.out.Print(gitCheckResult{Name: meta.Name, GitIntegrity: nil, Applicable: false},
 					func(w io.Writer) { fmt.Fprintf(w, "%s: git-check does not apply to a clone sandbox\n", meta.Name) })
 			}

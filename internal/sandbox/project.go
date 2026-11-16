@@ -19,7 +19,10 @@ import (
 
 // The agent can write the workspace, so podbox never reads the project's
 // policy or ignore file live: it snapshots them into the state directory at
-// creation and on an explicit `podbox policy reload`.
+// creation and on an explicit `podbox policy reload`. They are always read
+// from the host project (Meta.Workspace), also for a clone sandbox, whose
+// copies the agent can rewrite: only the tree masks are resolved against is
+// the one mounted (Store.Source).
 
 // ProjectPolicyRel is the project policy file inside the workspace.
 const ProjectPolicyRel = ".podbox/policy.yaml"
@@ -139,7 +142,7 @@ func (s Store) readProject(m Meta) (Changes, []liveFile, error) {
 	var c Changes
 	var out []liveFile
 	for _, f := range s.projectFiles(m.Name) {
-		live, ok, err := readLive(s.Source(m), f.rel)
+		live, ok, err := readLive(m.Workspace, f.rel)
 		if err != nil {
 			c.Warnings = append(c.Warnings, err.Error())
 			ok = false
@@ -254,7 +257,7 @@ func (s Store) compileWith(m Meta, rules []byte, ok bool) (policy.Effective, err
 func (s Store) Drift(m Meta) []string {
 	var out []string
 	for _, f := range s.projectFiles(m.Name) {
-		live, lok, lerr := readLive(s.Source(m), f.rel)
+		live, lok, lerr := readLive(m.Workspace, f.rel)
 		snap, sok, serr := readSnap(f.snap)
 		if lerr != nil || serr != nil || lok != sok || !bytes.Equal(live, snap) {
 			out = append(out, f.rel)

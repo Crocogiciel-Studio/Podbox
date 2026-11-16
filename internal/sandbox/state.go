@@ -13,6 +13,7 @@ import (
 
 	"github.com/Crocogiciel-Studio/podbox/internal/fsutil"
 	"github.com/Crocogiciel-Studio/podbox/internal/gitguard"
+	"github.com/Crocogiciel-Studio/podbox/internal/hostgit"
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
 )
 
@@ -172,13 +173,23 @@ func (s Store) HasClone(name string) bool {
 	return err == nil && fi.IsDir()
 }
 
-// RemoveClone deletes a sandbox's clone.
+// HasStaging reports a clone left half-made by an interrupted create.
+func (s Store) HasStaging(name string) bool {
+	d := s.CloneDir(name)
+	if d == "" {
+		return false
+	}
+	_, err := os.Lstat(hostgit.PartialDir(d))
+	return err == nil
+}
+
+// RemoveClone deletes a sandbox's clone and any staging left of it.
 func (s Store) RemoveClone(name string) error {
 	d := s.CloneDir(name)
 	if d == "" {
 		return nil
 	}
-	return os.RemoveAll(d)
+	return errors.Join(os.RemoveAll(d), os.RemoveAll(hostgit.PartialDir(d)))
 }
 
 // Sources lists the policy layers of a sandbox.

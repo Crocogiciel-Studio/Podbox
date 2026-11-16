@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/hostgit"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 )
 
@@ -157,32 +158,45 @@ func TestAgentSpecOfAClone(t *testing.T) {
 	}
 }
 
-func TestMasksAndProjectFilesComeFromTheClone(t *testing.T) {
+// The config files (.sandboxignore, .podbox/policy.yaml) are the host
+// project's, read once and snapshotted; only the tree the masks are resolved
+// against is the clone. The clone's own copies, which the agent can rewrite,
+// are ignored.
+func TestCloneMasksComeFromTheHostProjectConfig(t *testing.T) {
 	st := cloneStore(t)
 	project := t.TempDir()
-	write(t, filepath.Join(project, ".sandboxignore"), "/host-only\n")
+	write(t, filepath.Join(project, ".sandboxignore"), "/.env\n") // untracked or gitignored on the host: not in the clone
+	write(t, filepath.Join(project, ".podbox", "policy.yaml"), "rules:\n  - host: example.org\n    allow: true\n")
 	m := Meta{Name: "c", Agent: "shell", Workspace: project, Mode: ModeClone}
 	if err := st.Save(m); err != nil {
 		t.Fatal(err)
 	}
 	clone := st.CloneDir("c")
-	write(t, filepath.Join(clone, ".sandboxignore"), "/.env\n")
-	write(t, filepath.Join(clone, ".env"), "SECRET=1")
-	write(t, filepath.Join(clone, ".podbox", "policy.yaml"), "rules:\n  - host: example.org\n    allow: true\n")
+	write(t, filepath.Join(clone, ".env"), "SECRET=1") // tracked, so in the clone
 	c, err := st.Snapshot(m)
-	if err != nil || len(c.IgnoreAdded) != 1 || c.IgnoreAdded[0] != "/.env" {
-		t.Fatalf("snapshot read the project, not the clone: %+v %v", c, err)
+	if err != nil || len(c.IgnoreAdded) != 1 || c.IgnoreAdded[0] != "/.env" || len(c.RulesAdded) != 1 {
+		t.Fatalf("snapshot did not read the host project: %+v %v", c, err)
 	}
 	res, err := st.ResolveMasks(m)
 	if err != nil || len(res.Masks) != 1 || res.Masks[0].Rel != ".env" {
-		t.Fatalf("masks: %+v %v", res.Masks, err)
+		t.Fatalf("the host's .sandboxignore must mask the tracked secret in the clone: %+v %v", res.Masks, err)
 	}
+	// The agent rewrites its copies: nothing changes.
+	write(t, filepath.Join(clone, ".sandboxignore"), "")
+	write(t, filepath.Join(clone, ".podbox", "policy.yaml"), "rules:\n  - host: evil.example\n    allow: true\n")
 	if d := st.Drift(m); len(d) != 0 {
-		t.Errorf("drift %v", d)
+		t.Errorf("drift follows the clone: %v", d)
 	}
-	write(t, filepath.Join(project, ".sandboxignore"), "/changed\n") // the host file is not watched
-	if d := st.Drift(m); len(d) != 0 {
-		t.Errorf("drift follows the host project: %v", d)
+	if res, err := st.ResolveMasks(m); err != nil || len(res.Masks) != 1 {
+		t.Fatalf("masks after the agent edit: %+v %v", res.Masks, err)
+	}
+	if c, _, err := st.Reload(m, false); err != nil || len(c.IgnoreAdded)+len(c.IgnoreRemoved)+len(c.RulesAdded)+len(c.RulesRemoved) != 0 || len(c.MasksDropped) != 0 {
+		t.Fatalf("reload read the clone: %+v %v", c, err)
+	}
+	// A host edit is drift, as in shared mode.
+	write(t, filepath.Join(project, ".sandboxignore"), "/changed\n")
+	if d := st.Drift(m); len(d) != 1 || d[0] != ".sandboxignore" {
+		t.Errorf("drift = %v", d)
 	}
 	// no fingerprint for a clone, and nothing to compare
 	if err := st.RecordGit(m); err != nil || st.HasGitPrint("c") {
@@ -190,5 +204,33 @@ func TestMasksAndProjectFilesComeFromTheClone(t *testing.T) {
 	}
 	if g, err := st.CheckGit(m); g != nil || err != nil {
 		t.Errorf("CheckGit = %v %v", g, err)
+	}
+}
+
+// A sandbox named foo.partial is valid: staging must never be its clone.
+func TestStagingNeverCollidesWithAClone(t *testing.T) {
+	st := cloneStore(t)
+	m := &Manager{RT: engine{}, Store: st, Warn: func(string, ...any) {}}
+	write(t, filepath.Join(st.CloneDir("foo.partial"), "work.txt"), "live clone of foo.partial")
+	if hostgit.PartialDir(st.CloneDir("foo")) == st.CloneDir("foo.partial") {
+		t.Fatal("staging of foo is the clone of foo.partial")
+	}
+	if ValidateName(filepath.Base(hostgit.PartialDir(st.CloneDir("foo")))) == nil {
+		t.Fatal("a sandbox can be named like a staging directory")
+	}
+	// leftover staging of foo: listed nowhere, removed with rm foo --volumes
+	write(t, filepath.Join(hostgit.PartialDir(st.CloneDir("foo")), "half"), "x")
+	list, err := m.List(context.Background())
+	if err != nil || len(list) != 1 || list[0].Name != "foo.partial" {
+		t.Fatalf("list: %+v %v", list, err)
+	}
+	if _, err := m.Remove(context.Background(), "foo", true); err != nil {
+		t.Fatalf("rm of a leftover staging directory: %v", err)
+	}
+	if st.HasStaging("foo") {
+		t.Error("staging left")
+	}
+	if _, err := os.Stat(filepath.Join(st.CloneDir("foo.partial"), "work.txt")); err != nil {
+		t.Fatalf("rm foo deleted the clone of foo.partial: %v", err)
 	}
 }

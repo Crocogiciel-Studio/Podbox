@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,13 +93,14 @@ func (w *capWriter) Write(p []byte) (int, error) {
 // Run runs git in dir (the current directory when empty) and returns its
 // stdout. Output past MaxOutput is an error.
 func Run(ctx context.Context, dir string, stdin io.Reader, args ...string) ([]byte, error) {
-	return run(ctx, dir, MaxOutput, stdin, args...)
+	return run(ctx, dir, MaxOutput, nil, stdin, args...)
 }
 
-func run(ctx context.Context, dir string, limit int, stdin io.Reader, args ...string) ([]byte, error) {
+// run is Run with a cap and variables set after the GIT_* filter.
+func run(ctx context.Context, dir string, limit int, extra []string, stdin io.Reader, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, base...), args...)...)
 	cmd.Dir = dir
-	cmd.Env = env(os.Environ())
+	cmd.Env = append(env(os.Environ()), extra...)
 	cmd.Stdin = stdin
 	out := &capWriter{limit: limit}
 	var stderr bytes.Buffer
@@ -177,12 +179,30 @@ func sameDir(a, b string) bool {
 	return err1 == nil && err2 == nil && ra == rb
 }
 
+// PartialDir is where Clone stages dest: a name no sandbox can have (names
+// start with a letter or a digit), so it never collides with a live clone.
+func PartialDir(dest string) string {
+	return filepath.Join(filepath.Dir(dest), ".partial-"+filepath.Base(dest))
+}
+
+// fileURL is the file:// URL of an absolute path, percent-encoded; a
+// Windows drive path (C:\x) gets its leading slash (file:///C:/x).
+func fileURL(p string) string {
+	p = filepath.ToSlash(p)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return (&url.URL{Scheme: "file", Path: p}).String()
+}
+
 // Clone makes dest a clone of the committed state of ws at base: no shared
 // object, no remote, no host hook and no host configuration. branch is the
-// checked out branch, empty for a detached HEAD. dest is created through a
-// sibling .partial directory; a failure leaves neither.
+// checked out branch, empty for a detached HEAD. dest is created through
+// PartialDir; a failure leaves neither. Git reads neither the host's global
+// nor its system configuration here: an insteadOf or a protocol rule there
+// must not redirect or refuse the clone.
 func Clone(ctx context.Context, ws, dest, base, branch string) (err error) {
-	partial := dest + ".partial"
+	partial := PartialDir(dest)
 	if err := os.RemoveAll(partial); err != nil {
 		return err
 	}
@@ -194,6 +214,10 @@ func Clone(ctx context.Context, ws, dest, base, branch string) (err error) {
 		return err
 	}
 	defer os.RemoveAll(tmpl)
+	isolated := []string{"GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "HOME=" + tmpl, "XDG_CONFIG_HOME=" + tmpl}
+	git := func(dir string, args ...string) ([]byte, error) {
+		return run(ctx, dir, MaxOutput, isolated, nil, args...)
+	}
 	defer func() {
 		if err != nil {
 			_ = os.RemoveAll(partial)
@@ -207,22 +231,22 @@ func Clone(ctx context.Context, ws, dest, base, branch string) (err error) {
 	} else {
 		args = append(args, "--no-checkout")
 	}
-	if _, err = Run(ctx, "", nil, append(args, "file://"+ws, partial)...); err != nil {
+	if _, err = git("", append(args, fileURL(ws), partial)...); err != nil {
 		return err
 	}
 	if branch == "" {
-		if _, err = Run(ctx, partial, nil, "checkout", "-q", "--detach", base); err != nil {
+		if _, err = git(partial, "checkout", "-q", "--detach", base); err != nil {
 			return err
 		}
 	}
-	if _, err = Run(ctx, partial, nil, "remote", "remove", "origin"); err != nil {
+	if _, err = git(partial, "remote", "remove", "origin"); err != nil {
 		return err
 	}
 	if branch != "" {
 		// Absent after remote remove on current git; ignore "no such section".
-		_, _ = Run(ctx, partial, nil, "config", "--remove-section", "branch."+branch)
+		_, _ = git(partial, "config", "--remove-section", "branch."+branch)
 	}
-	head, err := Run(ctx, partial, nil, "rev-parse", "HEAD")
+	head, err := git(partial, "rev-parse", "HEAD")
 	if err != nil {
 		return err
 	}

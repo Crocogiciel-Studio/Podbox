@@ -79,7 +79,7 @@ func TestRunIgnoresInheritedGitDir(t *testing.T) {
 func TestRunCapsOutput(t *testing.T) {
 	needGit(t)
 	dir := repo(t)
-	_, err := run(context.Background(), dir, 5, nil, "log")
+	_, err := run(context.Background(), dir, 5, nil, nil, "log")
 	if err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Fatalf("err = %v", err)
 	}
@@ -160,7 +160,7 @@ func TestClone(t *testing.T) {
 	if err := Clone(ctx, src, dest, r.Head, r.Branch); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(dest + ".partial"); err == nil {
+	if _, err := os.Stat(PartialDir(dest)); err == nil {
 		t.Error("partial left")
 	}
 	if _, err := os.Stat(filepath.Join(dest, "untracked.txt")); err == nil {
@@ -227,9 +227,68 @@ func TestCloneFailureLeavesNothing(t *testing.T) {
 	if err := Clone(context.Background(), t.TempDir(), dest, "abc", "main"); err == nil {
 		t.Fatal("clone of a non-repository succeeded")
 	}
-	for _, p := range []string{dest, dest + ".partial"} {
+	for _, p := range []string{dest, PartialDir(dest)} {
 		if _, err := os.Stat(p); err == nil {
 			t.Errorf("%s left", p)
 		}
+	}
+}
+
+func TestFileURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"/tmp/a b%41#c": "file:///tmp/a%20b%2541%23c",
+		"/tmp/plain":    "file:///tmp/plain",
+		"C:/x/y":        "file:///C:/x/y",
+	} {
+		if got := fileURL(in); got != want {
+			t.Errorf("fileURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCloneOfAnAwkwardPath(t *testing.T) {
+	needGit(t)
+	ctx := context.Background()
+	src := filepath.Join(t.TempDir(), "my repo %41 #1")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "init", "-q", "-b", "main")
+	write(t, filepath.Join(src, "a.txt"), "a\n")
+	git(t, src, "add", ".")
+	git(t, src, "commit", "-q", "-m", "one")
+	r, err := Inspect(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "c")
+	if err := Clone(ctx, src, dest, r.Head, r.Branch); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dest, "a.txt")); string(b) != "a\n" {
+		t.Error("wrong content")
+	}
+}
+
+// The host's global and system git configuration must neither redirect nor
+// refuse the clone.
+func TestCloneIgnoresHostGitConfig(t *testing.T) {
+	needGit(t)
+	ctx := context.Background()
+	src := repo(t)
+	r, err := Inspect(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	write(t, filepath.Join(home, ".gitconfig"), "[url \"https://nowhere.invalid/\"]\n\tinsteadOf = file://\n[protocol \"file\"]\n\tallow = never\n[init]\n\ttemplateDir = /nonexistent\n")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	dest := filepath.Join(t.TempDir(), "c")
+	if err := Clone(ctx, src, dest, r.Head, r.Branch); err != nil {
+		t.Fatalf("host configuration reached the clone: %v", err)
+	}
+	if got := git(t, dest, "rev-parse", "HEAD"); got != r.Head {
+		t.Errorf("HEAD %s", got)
 	}
 }

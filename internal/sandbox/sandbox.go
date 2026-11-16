@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/Crocogiciel-Studio/podbox/internal/agents"
@@ -118,6 +117,11 @@ func (m *Manager) Create(ctx context.Context, name, agentName, ws string, opt Cr
 	}
 	if _, err := m.Images.Ensure(ctx, ag.Image, false); err != nil {
 		return meta, imp, report, err
+	}
+	if opt.Clone { // after the slow image builds: the base commit and the counts must be current
+		if repo, err = hostgit.Inspect(ctx, ws); err != nil {
+			return meta, imp, report, err
+		}
 	}
 
 	meta = Meta{Name: name, Agent: ag.Name, Workspace: ws, Created: time.Now().UTC()}
@@ -378,11 +382,10 @@ func (m *Manager) remove(ctx context.Context, name string, volumes, dropClone bo
 	errs = append(errs, m.Store.Remove(name))
 	if st.Clone != "" {
 		rm.ClonePath = st.Clone
-		if dropClone {
-			errs = append(errs, m.Store.RemoveClone(name))
-		} else {
-			rm.CloneKept = true
-		}
+		rm.CloneKept = !dropClone
+	}
+	if dropClone {
+		errs = append(errs, m.Store.RemoveClone(name)) // also a leftover staging directory
 	}
 	if volumes && st.Agent != "" {
 		if err := m.RT.VolumeRemove(ctx, HomeVolume(st.Agent)); err != nil && !errors.Is(err, runtime.ErrNotFound) {
@@ -430,7 +433,7 @@ func (m *Manager) List(ctx context.Context) ([]Status, error) {
 	}
 	if cl, err := os.ReadDir(m.Store.ClonesRoot); err == nil && m.Store.ClonesRoot != "" {
 		for _, e := range cl { // clones left with no sandbox
-			if e.IsDir() && !strings.HasSuffix(e.Name(), ".partial") && ValidateName(e.Name()) == nil {
+			if e.IsDir() && ValidateName(e.Name()) == nil { // staging directories start with a dot
 				get(e.Name())
 			}
 		}
@@ -464,7 +467,7 @@ func (m *Manager) status(ctx context.Context, name string) (Status, error) {
 		s.addMeta(meta)
 		found = true
 	}
-	if m.Store.HasClone(name) {
+	if m.Store.HasClone(name) || m.Store.HasStaging(name) {
 		found = true
 	}
 	if !found {
