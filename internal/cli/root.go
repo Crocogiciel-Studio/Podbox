@@ -68,7 +68,7 @@ func classify(err error, started bool) error {
 		code = output.ExitPrereq
 	case errors.Is(err, hostgit.ErrNotRepo), errors.Is(err, hostgit.ErrNotTopLevel), errors.Is(err, hostgit.ErrEmptyRepo):
 		code = output.ExitUsage
-	case errors.Is(err, sandbox.ErrNotClone):
+	case errors.Is(err, sandbox.ErrNotClone), errors.Is(err, sandbox.ErrBadExport):
 		code = output.ExitUsage
 	case errors.Is(err, sandbox.ErrCloneExists), errors.Is(err, sandbox.ErrModeMismatch):
 		code = output.ExitGeneric
@@ -98,7 +98,7 @@ func (a *app) newRoot() *cobra.Command {
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return &output.Error{Code: output.ExitUsage, Err: err}
 	})
-	root.AddCommand(a.runCmd(), a.createCmd(), a.lsCmd(), a.execCmd(), a.attachCmd(), a.diffCmd(), a.policyCmd(), a.imageCmd(), a.doctorCmd(), a.versionCmd(), a.proxyCmd())
+	root.AddCommand(a.runCmd(), a.createCmd(), a.lsCmd(), a.execCmd(), a.attachCmd(), a.diffCmd(), a.exportCmd(), a.policyCmd(), a.imageCmd(), a.doctorCmd(), a.versionCmd(), a.proxyCmd())
 	root.AddCommand(a.lifecycleCmds()...)
 	return root
 }
