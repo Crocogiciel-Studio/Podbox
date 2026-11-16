@@ -1,5 +1,7 @@
 // Package termsafe makes text written by an untrusted party inert before it
-// reaches a terminal: escape sequences and control characters are removed.
+// reaches a terminal, without hiding any of it from a reviewer: what is
+// removed or made harmless leaves a visible marker, and the payload of an
+// escape sequence stays on screen as plain text.
 package termsafe
 
 import (
@@ -8,19 +10,25 @@ import (
 	"unicode/utf8"
 )
 
-// Clean removes from b every escape sequence (CSI, OSC, DCS, SOS, PM, APC and
-// two-character escapes), every C0 control except newline and tab, DEL and
-// the C1 range U+0080 to U+009F. Bidirectional controls, which reorder the
-// text a reviewer reads, become a visible <U+XXXX>; a byte that is not valid
-// UTF-8 becomes U+FFFD. A sequence never reaches past the end of its line, so
-// a missing terminator cannot hide the text that follows.
+// Clean makes b safe to print. Each ESC becomes a marker naming what it
+// introduces (<CSI>, <OSC>, <DCS>, <APC>, <PM>, <SOS>, <ST>, else <ESC>) and
+// the bytes after it stay as ordinary text, so the payload of a clipboard
+// write or a title is readable. C0 controls other than newline and tab, DEL
+// and an invalid UTF-8 byte are removed (the latter shown as U+FFFD). C1
+// controls and invisible code points (bidirectional controls, zero-width
+// characters, Unicode tags, line and paragraph separators, ...) become a
+// visible <U+XXXX>. Newline and tab are kept.
 func Clean(b []byte) []byte {
 	out := make([]byte, 0, len(b))
 	for i := 0; i < len(b); {
 		c := b[i]
 		switch {
 		case c == 0x1b:
-			i = skipEscape(b, i)
+			out = append(out, escMarker(b, i)...)
+			i++
+			if i < len(b) && marked(b[i]) { // the introducer is part of the marker
+				i++
+			}
 		case c == '\n' || c == '\t':
 			out = append(out, c)
 			i++
@@ -35,8 +43,7 @@ func Clean(b []byte) []byte {
 			switch {
 			case r == utf8.RuneError && n == 1:
 				out = utf8.AppendRune(out, utf8.RuneError)
-			case r >= 0x80 && r <= 0x9f:
-			case isBidi(r):
+			case isInvisible(r):
 				out = fmt.Appendf(out, "<U+%04X>", r)
 			default:
 				out = utf8.AppendRune(out, r)
@@ -47,54 +54,42 @@ func Clean(b []byte) []byte {
 }
 
 // CleanName cleans a file name; newline and tab, which Clean keeps for text,
-// become '?' so a name stays on one line.
+// become '?' so a name stays on one line. The result is for display only:
+// cleaning is lossy, so never look a file up by it.
 func CleanName(s string) string {
 	b := Clean([]byte(s))
 	b = bytes.ReplaceAll(b, []byte{'\n'}, []byte{'?'})
 	return string(bytes.ReplaceAll(b, []byte{'\t'}, []byte{'?'}))
 }
 
-func isBidi(r rune) bool {
-	return r == 0x061c || r == 0x200e || r == 0x200f || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069
+var introducers = map[byte]string{'[': "<CSI>", ']': "<OSC>", 'P': "<DCS>", '_': "<APC>", '^': "<PM>", 'X': "<SOS>", '\\': "<ST>"}
+
+func marked(c byte) bool { _, ok := introducers[c]; return ok }
+
+// escMarker names the sequence the ESC at b[i] starts.
+func escMarker(b []byte, i int) string {
+	if i+1 < len(b) {
+		if m, ok := introducers[b[i+1]]; ok {
+			return m
+		}
+	}
+	return "<ESC>"
 }
 
-// skipEscape returns the index after the escape sequence starting at b[i].
-func skipEscape(b []byte, i int) int {
-	j := i + 1
-	if j >= len(b) {
-		return len(b)
+// isInvisible reports a code point that shows nothing, or reorders text, and
+// so could hide code from a reviewer.
+func isInvisible(r rune) bool {
+	switch {
+	case r >= 0x80 && r <= 0x9f: // C1 controls
+	case r == 0x034f, r == 0x061c, r == 0x180e: // combining grapheme joiner, arabic letter mark, mongolian vowel separator
+	case r >= 0x200b && r <= 0x200f: // zero-width space, joiners, direction marks
+	case r == 0x2028, r == 0x2029: // line and paragraph separators
+	case r >= 0x202a && r <= 0x202e: // bidi embeddings and overrides
+	case r >= 0x2060 && r <= 0x2064, r >= 0x2066 && r <= 0x2069: // word joiner, invisible operators, bidi isolates
+	case r == 0xfeff, r >= 0xfff9 && r <= 0xfffb: // zero-width no-break space, interlinear annotation
+	case r >= 0xe0000 && r <= 0xe007f: // Unicode tags
+	default:
+		return false
 	}
-	switch b[j] {
-	case '[': // CSI: parameters, intermediates, one final byte
-		j++
-		for j < len(b) && b[j] >= 0x30 && b[j] <= 0x3f {
-			j++
-		}
-		for j < len(b) && b[j] >= 0x20 && b[j] <= 0x2f {
-			j++
-		}
-		if j < len(b) && b[j] >= 0x40 && b[j] <= 0x7e {
-			j++
-		}
-		return j
-	case ']', 'P', 'X', '^', '_': // OSC, DCS, SOS, PM, APC: up to BEL or ST
-		for j++; j < len(b); j++ {
-			switch {
-			case b[j] == 0x07:
-				return j + 1
-			case b[j] == 0x1b && j+1 < len(b) && b[j+1] == '\\':
-				return j + 2
-			case b[j] == 0x1b || b[j] == '\n':
-				return j // a new sequence, or the end of the line
-			}
-		}
-		return len(b)
-	}
-	for j < len(b) && b[j] >= 0x20 && b[j] <= 0x2f { // nF escape: intermediates, then a final
-		j++
-	}
-	if j < len(b) && b[j] >= 0x30 && b[j] <= 0x7e {
-		j++
-	}
-	return j
+	return true
 }
