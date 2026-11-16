@@ -52,3 +52,25 @@
 | 4 | `make test` | pass |
 | 5 | `test/e2e/clonediff.sh` and README and security model review | 54 passed, 0 failed |
 | 6 | `make lint test`, `make cross`, `make e2e`, `git ls-files -s test/e2e`, no `sed -i` | all exit 0, six scripts 100755 |
+
+## Run 3 (phase 2 repair)
+
+- Head: `6e549e4`
+- Phase: 2 repair after review
+- Left: no Mac or Windows check; no submodule with a populated checkout; the "rewritten loose base object" case is documented as undetectable here, not tested
+- Deviations from the plan and the review:
+  - `--` follows the base in `git diff <base> --` (the form that separates revisions from paths); `read-tree` takes the validated hex base without it
+  - the timeout knob is the environment variable `PODBOX_DIFF_TIMEOUT` (seconds) read by `podbox diff`; the default stays 120 s
+  - timeout exit codes 124 and 137 map to `ErrTimeout` (generic, exit 1)
+  - ignored files are listed with `--directory`, so a fully ignored directory counts once, and the list is read up to 1 MiB (`ignored_capped`)
+  - C1 controls are now visible `<U+XXXX>` instead of removed; escape sequences are no longer skipped: ESC becomes a marker and the payload stays as text
+  - the `C` status stays parsed with two names for safety but is shown as `unknown` (no `-C` is asked)
+
+| Item | Validation | Result |
+| ---- | ---------- | ------ |
+| 1 replace objects | unit env test; e2e plants a replace ref to a commit equal to the worktree, diff unchanged | pass |
+| 2 hooks, timeout | unit argv test (`timeout -k 5 120`, hooksPath), 124 and 137 mapping; e2e post-index-change hook not run, hanging clean filter gives exit 1 "timed out after 5s", no sleep left | pass |
+| 3 termsafe | table tests with markers, invisible code points, hidden payload | pass |
+| 4 completeness | ignored count, gitlink flag, single raw+numstat call with mismatch errors, sparse and submodule settings; e2e nested repo and ignored file | pass |
+| 5 status | unknown mapping test | pass |
+| 6 errors | stderr truncation test, error wording test | pass |
