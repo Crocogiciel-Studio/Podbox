@@ -93,7 +93,13 @@ Masks, `.sandboxignore`, the network policy, the agent context and every contain
 
 A podbox that predates this mode ignores the mode of a clone sandbox's record and would mount the project directory: remove clone sandboxes before downgrading.
 
-The commits the agent makes stay in the clone. Limits: submodules and LFS only as a plain clone gives them; no git identity is set; there is no export of the agent's work to the host in this release.
+### Reviewing a clone: `podbox diff`
+
+`diff` runs git inside the agent container, as the agent user, with the project path as `safe.directory`, the host's configuration absent, `core.pager`, `diff.external` and `core.fsmonitor` neutralized and `--no-ext-diff --no-textconv`, on a temporary index file (`GIT_INDEX_FILE`) removed afterwards. The host never runs git in the clone. The agent's index, configuration and objects are not written. Read this as a limit, not a guarantee: the data describes what the agent says it changed, produced by a git it controls through the clone. Treat the patch as untrusted text, review it before running or merging anything, and note that a clean-filter or similar attribute the agent set still runs inside the sandbox, never on the host.
+
+Everything the agent wrote is made inert on the host before it is printed or returned in JSON (`internal/termsafe`): ESC sequences (CSI, OSC such as clipboard writes and titles, DCS, APC, PM, SOS, two-character escapes), C0 controls except newline and tab, DEL, carriage return (which overwrites a line), the C1 range and invalid UTF-8 are removed or replaced, and bidirectional controls (which reorder text) are shown as `<U+XXXX>`. An escape sequence never reaches past its line, so a missing terminator cannot hide what follows. File names are cleaned the same way and a newline or tab in one becomes `?`; git's own quoting of unusual paths is switched off (`core.quotepath=off`) and the result cleaned. Output past 32 MiB is refused rather than truncated. `diff` refuses a shared sandbox (its workspace is your own repository) and a stopped one, and reads nothing else.
+
+The commits the agent makes stay in the clone. Limits: submodules and LFS only as a plain clone gives them; no git identity is set; there is no export of the agent's work to the host in this release, only `podbox diff` to review it.
 
 ## Agent context
 

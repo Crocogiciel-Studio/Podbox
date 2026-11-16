@@ -62,6 +62,7 @@ podbox policy show claude-my-project
 | `ls` | list sandboxes (name, agent, mode `shared` or `clone`, state, proxy, workspace), from podman labels and the state directory; a clone left with no sandbox shows with state `missing` |
 | `exec <name> -- <cmd>...` | run a command in the workspace, exit with its code |
 | `attach <name>` | open a new agent session in a running sandbox |
+| `diff <name> [--stat]` | what the agent changed in a running clone sandbox since its base commit: commits, uncommitted changes and untracked files, as a file summary, a total and a patch; `--stat` stops after the summary; exit 2 for a shared sandbox, 4 for an unknown one, 1 when the sandbox is stopped or the patch exceeds 32 MiB (use `--stat`) |
 | `git-check <name> [--accept]` | compare `.git` with the fingerprint taken at creation, exit 6 on suspicious changes; `--accept` re-records it; says it does not apply (exit 0) to a clone sandbox |
 | `policy show\|allow\|deny\|reload <name> [host]` | inspect and change the allowlist from the host; `reload --forget-missing` also drops recorded masks found nowhere |
 | `policy log <name> [--denied] [--follow] [--since 10m]` | the proxy's decisions, with the fix command for each refusal; exit 4 for an unknown sandbox, 1 when it is not running |
@@ -88,7 +89,22 @@ By default the agent works on your project directory (`shared` mode). With `--cl
 - `rm` keeps the clone because it holds the agent's work, and prints where; `rm <name> --volumes` deletes it. `create` refuses a name whose clone remains.
 - Needs git 2.29 or newer on the host, for `--clone` only; `podbox doctor` warns when it is missing.
 
-The agent's work cannot yet be brought back to the host with podbox: `podbox diff` and `podbox export` come next. Until then, read the clone at the path `create` printed.
+### Reviewing the agent's work
+
+```sh
+podbox diff claude-project          # summary, total, then the patch
+podbox diff claude-project --stat   # summary only
+podbox diff claude-project -o json
+```
+
+`diff` needs a running clone sandbox (it never starts one) and compares the clone's files with the base commit `create` printed: commits the agent made, uncommitted changes to tracked files and untracked files that git does not ignore. It reads the clone with git inside the sandbox, on a temporary index, so the agent's index, configuration and objects are untouched and your repository is never read.
+
+- Text: one line per file (`STATUS`, `ADDED`, `DELETED`, `PATH`; `untracked` for a file git does not track yet, `-` counts for a binary), a total, then the patch.
+- JSON: `name`, `base`, `files` (`path`, `old_path` for a rename, `status` of `added`, `modified`, `deleted`, `renamed` or `typechange`, `added`, `deleted`, `binary`, `untracked`) and `patch`, which `--stat` omits. No change gives an empty `files` array.
+- Terminal escape sequences, control characters and bidirectional overrides (also in file names) are removed or made visible before anything is printed, so what you read cannot move the cursor, set the clipboard or hide code. A file name with a newline or tab shows `?` there.
+- The output is capped at 32 MiB; past it `diff` exits 1 with nothing printed and suggests `--stat`.
+
+`podbox export` comes next. Until then, read the clone at the path `create` printed.
 
 ## Configuration
 
@@ -119,7 +135,7 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 | 6 | `git-check` found suspicious `.git` changes |
 | 7 | masks cannot be verified: the workspace or one of its directories is unreadable (`create`, `start`, `policy reload`), a recorded masked path is missing or now a symbolic link (`start`; restore it or `policy reload --forget-missing`), or the mask resolution is internally inconsistent; see [workspace masking](docs/security-model.md#workspace-masking) |
 
-`exec`, `attach` and `run` exit with the inner command's code. A suspicious `.git` change only prints a warning on these and on `start`, `stop`, `rm` and `ls` (and adds `git_integrity` to their JSON); see [git directory integrity](docs/security-model.md#git-directory-integrity). With `--output json`, errors are printed on stdout as `{"error":{"code":<exit code>,"kind":"...","message":"..."}}`.
+`diff` uses no new code: usage (2) for a shared sandbox, not found (4), generic (1) for a stopped sandbox or an oversized patch. `exec`, `attach` and `run` exit with the inner command's code. A suspicious `.git` change only prints a warning on these and on `start`, `stop`, `rm` and `ls` (and adds `git_integrity` to their JSON); see [git directory integrity](docs/security-model.md#git-directory-integrity). With `--output json`, errors are printed on stdout as `{"error":{"code":<exit code>,"kind":"...","message":"..."}}`.
 
 ## Known limits
 
