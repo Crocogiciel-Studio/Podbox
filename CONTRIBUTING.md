@@ -5,7 +5,7 @@
 ```sh
 make lint test   # gofmt, go vet, unit tests
 make cross       # linux/darwin/windows x amd64/arm64
-make e2e         # Linux with rootless Podman: evasion, lifecycle, agent context and clone suites
+make e2e         # Linux with rootless Podman: evasion, lifecycle, agent context, clone and clone diff suites
 ```
 
 `make e2e` needs rootless Podman 4.4+ (`podbox doctor` must report no failure).
