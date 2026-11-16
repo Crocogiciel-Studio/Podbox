@@ -89,3 +89,16 @@
 | `make e2e` (evasion 187, lifecycle 24, agentctx 43, clone 66, clonediff 115, cloneexport 158 passed, 0 failed) | 0 | |
 | new cloneexport.sh against a 779a2ed build | 9 failed, 149 passed | expected: shows the review findings were real |
 | `git ls-files -s test/e2e` | seven scripts 100755 | |
+
+## Round 8 (phase 3, final small repair)
+
+- Head: `9b64a59`
+- Uncommitted changes: no (this file and run.md aside)
+- Verdict: PASS
+
+| Check | Exit | Failure |
+| --- | --- | --- |
+| `make lint test` | 0 | |
+| `make cross` | 0 | |
+| `make e2e` (evasion 187, lifecycle 24, agentctx 43, clone 66, clonediff 115, cloneexport 158 passed, 0 failed) | 0 | |
+| `git ls-files -s test/e2e` | seven scripts 100755 | |

@@ -172,3 +172,19 @@
 | 7 cleanups | `TestDefaultBranchIsAlwaysAValidName`, `TestOptionsValidate`, `TestSubName` | the name test yes |
 
 Verified against 779a2ed in a temporary worktree: the new repair unit tests (without the two tests that need new APIs) failed on 6 tests, and the new e2e script run with a 779a2ed binary failed 9 of 158 checks.
+
+## Run 8 (phase 3, final small repair)
+
+- Head: `9b64a59`
+- Left: no Mac or Windows check; the patch needs a directory that allows hard links (an error says so); a killed run can leave a hidden `.<name>.tmp-*` file next to the patch (the final name never holds a partial file); the exit code of an interrupted command is unchanged (no interrupt code is in the exit table); no test pins `core.bigFileThreshold` on the two fetches (argv of host git is not observable in the unit tests)
+- Changes:
+  - `interruptContext` removes the signal handler after the first signal, so a second SIGINT or SIGTERM kills a command that ignores its context; the export cleanup still runs on the first
+  - the warning match of `analyze` lower-cases the path and its base name (`.GitAttributes`, `Lefthook.yml`, `.Podbox/`, `.SandboxIgnore`)
+  - the docs say exactly when objects can remain (only after the second fetch) and that memory is a limit; `core.bigFileThreshold=64m` is on both fetches
+  - the patch is written under a temporary name in its directory, checked there, then `os.Link`ed to its name; plan.md Decisions records the combined, message-free patch and why
+
+| Item | Test | Fails without the fix |
+| ---- | ---- | --------------------- |
+| 1 | `TestSecondInterruptKills` (helper process, two SIGTERM) | yes (child still alive after 5 s) |
+| 2 | case variants in `TestAnalyzeWarnings` | yes (hook-like only) |
+| 5 | `TestPatchIsLinkedIntoPlaceOnlyWhenWhole` (final name absent while streaming, no debris after success, refusal, symlink and cap) | yes, on the previous head |
