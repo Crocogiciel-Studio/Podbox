@@ -79,6 +79,15 @@ up() {
 	}
 }
 
+# upclone <sandbox> <repository>: create a clone sandbox and start it.
+upclone() {
+	local err
+	err=$("$PODBOX" create shell "$2" --name "$1" --clone 2>&1 >/dev/null) && err=$("$PODBOX" start "$1" 2>&1 >/dev/null) || {
+		printf '%s\n' "$err" >&2
+		return 1
+	}
+}
+
 pb() { "$PODBOX" "$@"; }
 
 # q <command...>: the command with stdout discarded (for check).
