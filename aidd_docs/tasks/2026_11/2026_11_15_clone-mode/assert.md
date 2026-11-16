@@ -35,3 +35,16 @@
 | `make lint test` and `make cross` | 0 | |
 | `make e2e` (evasion 187, lifecycle 24, agentctx 43, clone 66, clonediff 69 passed, 0 failed) | 0 | |
 | `git ls-files -s test/e2e` | six scripts 100755 | |
+
+## Round 4 (phase 2, second repair)
+
+- Head: `3f1a772`
+- Uncommitted changes: no
+- Verdict: PASS
+
+| Check | Exit | Failure |
+| --- | --- | --- |
+| `make lint test` and `make cross` | 0 | |
+| `make e2e` (evasion 187, lifecycle 24, agentctx 43, clone 66, clonediff 93 passed, 0 failed) | 0 | |
+| new clonediff.sh against a build of 3adfe9e | 26 failed, 67 passed | expected: shows the three deal breakers were real |
+| `git ls-files -s test/e2e` | six scripts 100755 | |

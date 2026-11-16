@@ -74,3 +74,22 @@
 | 4 completeness | ignored count, gitlink flag, single raw+numstat call with mismatch errors, sparse and submodule settings; e2e nested repo and ignored file | pass |
 | 5 status | unknown mapping test | pass |
 | 6 errors | stderr truncation test, error wording test | pass |
+
+## Run 4 (phase 2, second repair)
+
+- Head: `3f1a772`
+- Left: no Mac or Windows check; a file under a populated submodule checkout; the agent's git is the image's 2.39 (`GIT_ATTR_SOURCE` unavailable)
+- Design changes:
+  - the temporary index is built as: `read-tree base`, then `add -f -N` of every path the agent's index or HEAD tracks that the base lacks and that exists on disk (paths on stdin with `--pathspec-from-file=- --pathspec-file-nul`, `GIT_LITERAL_PATHSPECS=1`), then the untracked list (`ls-files --others --exclude-standard` on the temporary index), then `add -N .`; "untracked" and "ignored" come from the temporary index, the agent's real index is only read to learn what is tracked; a path in HEAD but dropped from the index is kept only if it is still on disk (`ls-files --others`)
+  - `ls-files --cached --deleted` lists every cached file, so the deleted list uses `--deleted` alone (a unit test panics on the combined form)
+  - attributes: the diff always uses `--text`; `--binary` is never passed; a file is binary when its patch section holds a NUL byte; a second plain `--numstat` call gives git's own verdict, used for `binary_attr` and for files whose patch has no content (rename, mode change); with `--stat` the patch is still read, cut quietly at the cap
+  - termsafe: every C0 control and DEL becomes `<U+XXXX>`, except the CR of CRLF (documented); forged markers are written `<U+003C>...`; invisible set is unicode Cf, Cc, Co plus an explicit list
+  - JSON: one `sandbox.DiffResult` (also used by the CLI), `schema`, `path_b64`, `mode`, `old_mode`, `symlink`, `exec`, `id`, `old_id`, `binary_attr`, case-collision and non-ASCII notes
+  - code split: `inspect.go` (exec helpers), `diff.go`, `diffparse.go`; `Manager.requireRunning` is shared by `Exec`, `ProxyLog` and the clone checks
+- Deviations: ignored paths are listed with `--directory` (one per directory); a patch section is matched to a file by position; `PODBOX_DIFF_TIMEOUT` left as is
+
+| Deal breaker | New e2e cases | Fail on the previous binary (3adfe9e) |
+| ------------ | ------------- | ------------------------------------- |
+| 1 ignored tracked file | committed, staged-with--f and dropped-from-index files listed, content in the patch, JSON untracked false, ignored.log only counted | yes: ran the new script against a build of 3adfe9e, 26 of 93 checks failed, these among them |
+| 2 attributes | `* binary` plus `.git/info/attributes` `code.py -diff`: text readable, `binary_attr`, real binary still binary, same under `--stat` | yes, same run |
+| 3 silent C0 | BS and CR and BEL visible as `<U+0008>`, `<U+000D>`, `<U+0007>` in content and name | yes, same run; plus table tests over every C0, DEL and C1 |
