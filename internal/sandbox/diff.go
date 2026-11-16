@@ -217,7 +217,7 @@ func (m *Manager) trackedOutsideBase(git func(map[string]string, ...string) ([]b
 	if err != nil {
 		return nil, err
 	}
-	deleted, err := git(agent, "ls-files", "-z", "--cached", "--deleted")
+	deleted, err := git(agent, "ls-files", "-z", "--deleted")
 	if err != nil {
 		return nil, err
 	}

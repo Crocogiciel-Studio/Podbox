@@ -59,9 +59,13 @@ rm del.txt
 git mv ren.txt ren2.txt 2>/dev/null; sed "5s/.*/five/" ren2.txt > ren2.tmp && mv ren2.tmp ren2.txt
 echo untracked > u.txt
 printf "\000\001\002binary" > bin.dat
-printf "line\033]52;c;aGVsbG8=\007\033[2J\033[31mred\033[0m\015overwrite\302\233x end\n" > "$(printf "evil\033[31mname\033]0;pwned\007.txt")"
+printf "line\033]52;c;aGVsbG8=\007\033[2J\033[31mred\033[0m\015overwrite\302\233x end\010\n" > "$(printf "evil\033[31mname\033]0;pwned\007.txt")"
 printf "x\n" > "$(printf "new\nline.txt")"
-echo ignored.log > .gitignore; echo hidden > ignored.log
+printf "ignored.log\nhidden.txt\nstaged.txt\ndropped.txt\n" > .gitignore; echo hidden > ignored.log
+echo hidden > hidden.txt; git add -f hidden.txt; git commit -qm hidden
+echo staged > staged.txt; git add -f staged.txt
+echo dropped > dropped.txt; git add -f dropped.txt; git commit -qm dropped; git rm --cached -q dropped.txt
+echo run > run.sh; chmod +x run.sh; ln -s a.txt link
 mkdir nested && git -C nested init -q && git -C nested -c user.name=n -c user.email=n@example.org commit -q --allow-empty -m nested'
 STATE=$(agentstate)
 
@@ -80,11 +84,20 @@ check "the patch holds the committed change" grep -q '^+committed$' "$OUT"
 check "the patch holds the uncommitted change" grep -q '^+uncommitted line$' "$OUT"
 check "the patch holds the untracked file" grep -q '^+untracked$' "$OUT"
 check "the patch holds the deletion" grep -q '^-to delete$' "$OUT"
-check "the patch holds a binary patch" grep -q '^GIT binary patch' "$OUT"
+check "a binary file is summarised, its content not printed" grep -q '^Binary file: contains NUL bytes, content not shown' "$OUT"
+check "no base85 binary patch is printed" test "$(grep -c '^GIT binary patch' "$OUT")" = 0
+check "a binary file is flagged in the summary" grep -Eq '^untracked +- +- +bin.dat .*contains NUL bytes' "$OUT"
+check "a file the agent committed although .gitignore lists it is in the diff" grep -Eq '^added +1 +0 +hidden.txt' "$OUT"
+check "a listed file only staged with -f is in the diff" grep -Eq '^added +1 +0 +staged.txt' "$OUT"
+check "a listed file dropped from the index but committed is in the diff" grep -Eq '^added +1 +0 +dropped.txt' "$OUT"
+check "the patch holds the hidden file's content" grep -q '^+hidden$' "$OUT"
+check "an ignored untracked file is not listed" test "$(grep -Ec '^[a-z]+ +[0-9-]+ +[0-9-]+ +ignored.log' "$OUT")" = 0
+check "a symlink and an executable are flagged" grep -q 'link .*symlink' "$OUT" && grep -q 'run.sh .*executable' "$OUT"
+check "C0 controls in content are visible" grep -q 'x end<U+0008>' "$OUT"
 check "text output is printable: no ESC, CR, BEL or C1" printable "$OUT"
-check "the hostile content keeps its payload visible" grep -q 'line<OSC>52;c;aGVsbG8=<CSI>2J<CSI>31mred<CSI>0moverwrite<U+009B>x end' "$OUT"
-check "the hostile name keeps its payload visible" grep -q 'evil<CSI>31mname<OSC>0;pwned.txt' "$OUT"
-check "ignored files are counted, not hidden" grep -Eq '^[0-9]+ ignored path\(s\) not shown' "$OUT"
+check "the hostile content keeps its payload visible" grep -q 'line<OSC>52;c;aGVsbG8=<U+0007><CSI>2J<CSI>31mred<CSI>0m<U+000D>overwrite<U+009B>x end<U+0008>' "$OUT"
+check "the hostile name keeps its payload visible" grep -q 'evil<CSI>31mname<OSC>0;pwned<U+0007>.txt' "$OUT"
+check "ignored files are counted, not hidden" grep -Eq '^[0-9]+ ignored untracked path\(s\) not shown' "$OUT"
 check "a nested repository is flagged" grep -q 'nested.*\[nested repository' "$OUT"
 check "a newline in a name stays on one line" grep -q 'new?line.txt' "$OUT"
 
@@ -100,6 +113,9 @@ check "JSON committed file is not untracked" test "$(json '.files[] | select(.pa
 check "JSON counts the ignored paths" test "$(json '.ignored >= 1')" = true
 check "JSON flags the nested repository" test "$(json '.files[] | select(.path == "nested") | .gitlink')" = true
 check "JSON flags no other gitlink" test "$(json '[.files[] | select(.gitlink)] | length')" = 1
+check "JSON schema and symlink, exec, mode" test "$(json '[.schema, (.files[] | select(.path == "link") | .symlink), (.files[] | select(.path == "run.sh") | [.exec, .mode] | join(":"))] | join(" ")')" = "1 true true:100755"
+check "JSON path_b64 is the raw path" test "$(json '.files[] | select(.path == "a.txt") | .path_b64' | base64 -d)" = a.txt
+check "JSON lists the hidden tracked files, not untracked" test "$(json '[.files[] | select(.path == "hidden.txt" or .path == "staged.txt" or .path == "dropped.txt") | .untracked] | join(" ")')" = "false false false"
 check "JSON has the sanitized patch" test "$(json '.patch | contains("+uncommitted line")')" = true
 check "JSON raw bytes hold no control byte" printable "$OUT"
 check "JSON strings hold no control byte" test "$(jq -r '[.patch, (.files[] | .path, .old_path // "")] | join("")' "$OUT" | LC_ALL=C tr -d '\n\t' | LC_ALL=C grep -c '[^ -~]')" = 0
@@ -110,6 +126,31 @@ echo "== nothing of the agent changed, host untouched"
 check "agent index, config, objects and status unchanged by the diff" test "$(agentstate)" = "$STATE"
 check "no temporary index left" sx "$NAME" '! ls /tmp/podbox-diff-* >/dev/null 2>&1'
 check "host repository unchanged" test "$(hostprint)" = "$BEFORE"
+
+echo "== attributes cannot make text unreadable"
+sx "$NAME" 'printf "* binary\n" > .gitattributes; mkdir -p .git/info; printf "code.py -diff\n" >> .git/info/attributes; printf "print(1)\n" > code.py'
+pb diff "$NAME" >"$OUT"
+check "a text file under '* binary' and an info/attributes -diff is readable" grep -q '^+print(1)$' "$OUT"
+check "an edited text file is readable too" grep -q '^+uncommitted line$' "$OUT"
+check "no base85 patch and no 'Binary files differ' for text" test "$(grep -c '^GIT binary patch\|^Binary files' "$OUT")" = 0
+check "the summary says attributes flagged it" grep -q 'code.py .*git attributes mark it binary; shown as text' "$OUT"
+check "a real binary stays summarised" grep -q '^Binary file: contains NUL bytes' "$OUT"
+pb diff "$NAME" -o json >"$OUT"
+check "JSON: text file binary=false, binary_attr=true" test "$(json '.files[] | select(.path == "code.py") | [.binary, .binary_attr] | join(" ")')" = "false true"
+check "JSON: real binary binary=true" test "$(json '.files[] | select(.path == "bin.dat") | .binary')" = true
+pb diff "$NAME" --stat -o json >"$OUT"
+check "--stat reaches the same verdicts" test "$(json '[.files[] | select(.path == "code.py" or .path == "bin.dat") | "\(.path)=\(.binary)"] | join(" ")')" = "bin.dat=true code.py=false"
+sx "$NAME" 'rm -f .gitattributes .git/info/attributes code.py'
+
+echo "== names a reviewer can misread"
+sx "$NAME" 'echo 1 > Case.TXT; echo 2 > case.txt; f=$(printf "caf\303\251.txt"); echo 3 > "$f"'
+pb diff "$NAME" >"$OUT"
+check "case collisions are reported" grep -q '2 path(s) differ only by case' "$OUT"
+check "non-ASCII paths are reported" grep -q '1 path(s) have non-ASCII' "$OUT"
+pb diff "$NAME" -o json >"$OUT"
+check "JSON counts them" test "$(json '[.case_collisions, .non_ascii] | join(" ")')" = "2 1"
+check "path_b64 of a non-ASCII name is lossless" test "$(json '.files[] | select(.non_ascii_x // (.path | test("caf"))) | .path_b64' | base64 -d | od -An -tx1 | tr -d ' \n')" = "636166c3a92e747874"
+sx "$NAME" 'rm -f Case.TXT case.txt caf*.txt'
 
 echo "== git replace cannot fake the base"
 PATHS=$(pb diff "$NAME" --stat -o json | jq -c '[.files[].path]')

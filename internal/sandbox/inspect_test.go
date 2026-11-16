@@ -69,6 +69,9 @@ func key(argv []string) string {
 	case "ls-files":
 		switch {
 		case contains(c, "--deleted"):
+			if contains(c, "--cached") {
+				panic("ls-files --cached --deleted lists every cached file")
+			}
 			return "deleted"
 		case contains(c, "--cached"):
 			return "cached"
