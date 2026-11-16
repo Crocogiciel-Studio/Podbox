@@ -146,3 +146,29 @@
 | masked refusal | yes: e2e against a build without it (7 checks) |
 | patch formatting overrides | yes: e2e (injected header and signature) against a build without `--no-add-header` and `--no-signature` |
 | combined mutant build of all of the above | e2e: 22 of 141 checks failed |
+
+## Run 7 (phase 3 repair)
+
+- Head: `8aa8171` (code at `2db11d0` and the three commits after it)
+- Left: no Mac or Windows check; the SIGTERM e2e depends on timing (it passes by design when the export beats the signal; it was interrupted for real in the run recorded here); NTFS trailing dot and short names, and Unicode normalisation, are not handled by the mask match (documented); a decompression bomb is bounded by the timeout and disk only, as git has no inflate limit reachable from `fetch`
+- Design changes:
+  - the patch is one `git diff --binary --full-index <base> <tip>` with no commit message; the host runs `git apply --numstat -z` on the finished file and removes it when its file set differs from the reviewed net change; history is kept by `--as branch`
+  - the review covers the net change and every commit (`log --raw --no-abbrev -m` and `log -p -m`, merges against each parent), one entry per path, mode and blob; masks and warnings use the union, so a change a later commit undoes is seen
+  - the bundle is fetched into a quarantine bare repository (alternates to the host objects, none of its configuration) where the object checks and the review run; only then are the reviewed objects fetched into a temporary ref of the host; a refused bundle leaves no host object; the errors say `bundle verify failed` or `object check failed`
+  - mask matching lower-cases the patterns, the recorded paths and the candidate (`workspace.MatcherFold`)
+  - the review does not read a blob over 64 MiB (`core.bigFileThreshold`, no `--text`); such a file and a "Binary files differ" section count as hidden
+  - `podbox` cancels the command context on SIGINT and SIGTERM
+  - `ExportOptions.Validate` is the only place of the flag-combination rules; `subName` names the real git subcommand in errors; a default branch name is re-sanitized after the 100 byte cut and the sandbox name is sanitized too
+- Deviations from the review: `--as patch` still checks git and the base commit on the host (the brief for phase 3 asks for the base check in both forms), so it still makes the temporary directory; `--max-input-size` is not reachable through `fetch`, so the size limit is a timeout and a documented residual
+
+| Item | Test | Fails on 779a2ed |
+| ---- | ---- | ---------------- |
+| 1 message diff smuggled into the patch, merge's own changes | unit `TestPatchHoldsNoCommitMessage`, `TestExportMerge`; e2e message and merge sections | yes (unit and e2e) |
+| 2 interrupt | e2e SIGTERM section; unit cancel during the bundle and a refused import leaves no object or ref | e2e: yes (3 checks); the unit cleanup tests pass on both, they pin the defers |
+| 3 case folding | `TestMaskCaseFolding`, `TestMatcherFold` | yes (the pattern case; the recorded case follows from the first refusal missing) |
+| 4 size | `TestBigFileIsNotInflatedByTheReview` | yes |
+| 5 history | `TestMaskedTouchedThenReverted`, e2e reverted section | yes (unit and e2e) |
+| 6 layers, fsck | `TestExportObjectChecks` (ten cases), `TestExportObjectChecksIgnoreLocalSettings`, layer asserts in `TestExportBadBundles` | new behaviour, not run on 779a2ed |
+| 7 cleanups | `TestDefaultBranchIsAlwaysAValidName`, `TestOptionsValidate`, `TestSubName` | the name test yes |
+
+Verified against 779a2ed in a temporary worktree: the new repair unit tests (without the two tests that need new APIs) failed on 6 tests, and the new e2e script run with a 779a2ed binary failed 9 of 158 checks.
