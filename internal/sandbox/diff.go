@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"sort"
 	"strconv"
@@ -91,59 +90,15 @@ func (m *Manager) Diff(ctx context.Context, name string, opt DiffOptions) (DiffR
 	}
 	idx := "/tmp/podbox-diff-" + hex.EncodeToString(rnd[:])
 	defer m.runIn(context.WithoutCancel(ctx), meta, []string{"rm", "-f", idx, idx + ".lock"}, nil)
-	limit := m.GitTimeout
-	if limit <= 0 {
-		limit = DefaultGitTimeout
-	}
-	agent := map[string]string{ // the agent's own index: read only
-		"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0",
-		"GIT_NO_REPLACE_OBJECTS": "1", "GIT_ATTR_NOSYSTEM": "1",
-	}
-	project := WorkspaceTarget(m.GOOS, meta.Workspace)
-	fail := func(sub string, err error) error {
-		var ee *ExecError
-		if errors.As(err, &ee) && (ee.Code == 124 || ee.Code == 137) {
-			return fmt.Errorf("%w after %ds; the sandbox may contain a hostile program", ErrTimeout, int(limit.Seconds()))
-		}
-		return fmt.Errorf("git %s: %w", sub, err)
-	}
-	gitInto := func(env map[string]string, stdin []byte, out limitedWriter, sub ...string) error {
-		var in io.Reader
-		if stdin != nil {
-			in = bytes.NewReader(stdin)
-		}
-		if err := m.runInto(ctx, meta, gitArgs(project, limit, sub...), env, in, out); err != nil {
-			return fail(sub[0], err)
-		}
-		return nil
-	}
-	git := func(env map[string]string, sub ...string) ([]byte, error) {
-		out := &capWriter{max: maxOutput}
-		if err := gitInto(env, nil, out, sub...); err != nil {
-			return nil, err
-		}
-		return out.buf.Bytes(), nil
-	}
-	merge := func(maps ...map[string]string) map[string]string {
-		out := map[string]string{}
-		for _, m := range maps {
-			for k, v := range m {
-				out[k] = v
-			}
-		}
-		return out
-	}
+	sess := m.newGitSession(ctx, meta)
+	gitInto, git := sess.into, sess.git
 
 	// Every filter the agent defined becomes cat before any git call reads the worktree.
-	names, err := m.configuredFilters(git, agent)
+	names, err := sess.harden()
 	if err != nil {
 		return DiffResult{}, err
 	}
-	over, err := filterOverrides(names)
-	if err != nil {
-		return DiffResult{}, err
-	}
-	agent = merge(agent, over)
+	agent := sess.agent
 	temp := merge(agent, map[string]string{"GIT_INDEX_FILE": idx})
 
 	// The temporary index starts as the base tree...

@@ -118,3 +118,81 @@ func (m *Manager) runInto(ctx context.Context, meta Meta, argv []string, env map
 	}
 	return nil
 }
+
+// gitSession runs git in the agent container of one clone sandbox: bounded by
+// a timeout, with the agent's configuration neutralised as far as git allows.
+type gitSession struct {
+	m       *Manager
+	ctx     context.Context
+	meta    Meta
+	project string
+	limit   time.Duration
+	// agent is the environment of every call: no global or system config, no
+	// replace objects, no optional locks (the agent's index is only read).
+	agent map[string]string
+}
+
+func (m *Manager) newGitSession(ctx context.Context, meta Meta) *gitSession {
+	limit := m.GitTimeout
+	if limit <= 0 {
+		limit = DefaultGitTimeout
+	}
+	return &gitSession{m: m, ctx: ctx, meta: meta, limit: limit, project: WorkspaceTarget(m.GOOS, meta.Workspace),
+		agent: map[string]string{
+			"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0",
+			"GIT_NO_REPLACE_OBJECTS": "1", "GIT_ATTR_NOSYSTEM": "1",
+		}}
+}
+
+func (s *gitSession) fail(sub string, err error) error {
+	var ee *ExecError
+	if errors.As(err, &ee) && (ee.Code == 124 || ee.Code == 137) {
+		return fmt.Errorf("%w after %ds; the sandbox may contain a hostile program", ErrTimeout, int(s.limit.Seconds()))
+	}
+	return fmt.Errorf("git %s: %w", sub, err)
+}
+
+// into runs git with env, an optional stdin and the caller's stdout.
+func (s *gitSession) into(env map[string]string, stdin []byte, out limitedWriter, sub ...string) error {
+	var in io.Reader
+	if stdin != nil {
+		in = bytes.NewReader(stdin)
+	}
+	if err := s.m.runInto(s.ctx, s.meta, gitArgs(s.project, s.limit, sub...), env, in, out); err != nil {
+		return s.fail(sub[0], err)
+	}
+	return nil
+}
+
+// git runs git with env and returns its capped stdout.
+func (s *gitSession) git(env map[string]string, sub ...string) ([]byte, error) {
+	out := &capWriter{max: maxOutput}
+	if err := s.into(env, nil, out, sub...); err != nil {
+		return nil, err
+	}
+	return out.buf.Bytes(), nil
+}
+
+// harden turns every git filter the agent configured into cat, for all later calls.
+func (s *gitSession) harden() ([]string, error) {
+	names, err := s.m.configuredFilters(s.git, s.agent)
+	if err != nil {
+		return nil, err
+	}
+	over, err := filterOverrides(names)
+	if err != nil {
+		return nil, err
+	}
+	s.agent = merge(s.agent, over)
+	return names, nil
+}
+
+func merge(maps ...map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, m := range maps {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	return out
+}
