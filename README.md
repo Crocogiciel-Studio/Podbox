@@ -83,7 +83,7 @@ By default the agent works on your project directory (`shared` mode). With `--cl
 - The clone holds the committed content only. `create` prints the base commit, the clone path and how many uncommitted and untracked files were left out.
 - It lives in podbox's state directory (`<state>/clones/<name>`) and appears in the agent at the project's usual absolute path, so paths and tools match shared mode.
 - It shares no object with your repository and carries no remote, no git configuration, no hook and no credential. podbox sets no git identity either: the agent or you configure one (`git config` in the clone, or `GIT_AUTHOR_*` and `GIT_COMMITTER_*` in the environment).
-- Masks, `.sandboxignore`, the network policy and every container guarantee apply unchanged. A tracked file masked by `.sandboxignore` is empty in the agent's view; an untracked secret is not in the clone at all.
+- Masks, `.sandboxignore`, the network policy and every container guarantee apply unchanged. `.sandboxignore` and `.podbox/policy.yaml` are read from your project directory, once at creation, exactly as in shared mode (`policy reload` and `policy allow --scope project` use the project's files too); the clone's own copies, which the agent can rewrite, are ignored. So a `.sandboxignore` that is untracked or gitignored on your side still masks a tracked secret: the file is empty in the agent's view. An untracked secret is not in the clone at all.
 - The git protections of shared mode (read-only hooks and config, fingerprint, `git-check`, hook notice) are off: the repository is the agent's, and the host never runs git inside it.
 - `rm` keeps the clone because it holds the agent's work, and prints where; `rm <name> --volumes` deletes it. `create` refuses a name whose clone remains.
 - Needs git 2.29 or newer on the host, for `--clone` only; `podbox doctor` warns when it is missing.
@@ -131,7 +131,7 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 - An allowlisted host is reachable on ports 80 and 443 only; list other ports with `ports:` on the rule or `podbox policy allow <name> <host> --port N`.
 - Only HTTP(S) leaves the sandbox: no SSH git remotes, no databases.
 - The agent context tells Claude and Kiro that they are sandboxed and what to ask the human; it informs and enforces nothing, the proxy and the container do. It is verified by the e2e suite, not against a live Claude or Kiro session.
-- Clone mode: a repository's submodules and LFS files are only what a plain `git clone` gives; each clone is a full copy of the repository's history on disk; a masked tracked file is empty in the clone, so a commit by the agent can record it as emptied; there is no way back to the host yet in this release.
+- Clone mode: a podbox older than this release does not know the mode and would treat a clone sandbox as a shared one, mounting your project directory: remove clone sandboxes before downgrading. Clone mode on Windows (the `file://` URL of a drive path) is designed for but untested. A repository's submodules and LFS files are only what a plain `git clone` gives; each clone is a full copy of the repository's history on disk; a masked tracked file is empty in the clone, so a commit by the agent can record it as emptied; there is no way back to the host yet in this release.
 - macOS and Windows are designed for but not tested in CI.
 
 ## License

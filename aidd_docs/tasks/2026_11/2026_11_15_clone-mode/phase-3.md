@@ -49,6 +49,7 @@ status: pending
 | Edge case | detached HEAD in the clone; the agent branch name carries a leading dash, spaces or control characters | detached is refused with a hint to create a branch; an invalid name is refused by `check-ref-format` and never reaches an argv unquoted | cli |
 | Edge case | the base commit no longer exists on the host (gc or a rewritten history) | `git bundle verify` fails, exit 1, nothing created, message names the missing prerequisite | cli |
 | Edge case | a corrupt or truncated bundle stream, and a stream over the cap | nothing created in the host repository and no temporary file left | cli |
+| Edge case | the agent commits an emptied or edited file that a `.sandboxignore` pattern of the host masks | `export` exits 1 naming the masked path and exports nothing; with `--include-masked` it proceeds and `masked_touched` lists the path | cli |
 | Edge case | the sandbox is stopped, shared, or unknown; `--as` missing or invalid; `--out` with branch or `--branch-name` with patch | exit 1, 2, 4, 2, 2 respectively | cli |
 | Teardown | `rm --volumes`, delete the exported branch and the patch files, remove the temporary directories | no podman object, no clone, host repository as at setup | cli |
 
@@ -78,6 +79,7 @@ status: pending
 1. Create `cli/export.go`: `--as` required (`branch` or `patch`), `--branch-name` only with branch, `--out` only with patch, other combinations are usage errors (2); text output names what was created and says "not exported: N uncommitted, M untracked"; `-o json` returns `as`, `branch` or `file`, `base`, `head`, `commits`, `exported`, and `not_exported`.
 2. Register it in `root.go`; map branch-exists, file-exists and verify failures to generic (1) with the suggestion; git missing stays exit 3; the host never merges, checks out or pushes.
 3. Print names from the sandbox through `termsafe.CleanName`.
+4. Refuse or flag every exported path that is masked in the sandbox (`Store.ResolveMasks` on the clone tree, host `.sandboxignore` snapshot): the agent sees a masked tracked file as empty and can commit it emptied, so an export would otherwise overwrite the real secret on the host. List the masked paths the commits touch (from `diff --name-status <base>..<branch>` run in the sandbox); `export` exits 1 naming them unless `--include-masked` is passed, and reports them in JSON (`masked_touched`).
 
 ### `4)` Tests
 
@@ -100,6 +102,6 @@ status: pending
 | ---- | ------------------- |
 | 1 | a bundle is imported only after `git bundle verify`; the new branch is created atomically and never overwrites; the host working tree, index, config and other refs are unchanged; temporary files and refs are removed on success and on failure |
 | 2 | the bundle holds only commits after the base; a patch file is written once and never replaced; uncommitted and untracked work is reported as not exported; no commit means nothing created |
-| 3 | `export --as branch` and `--as patch` work with their flags and defaults; invalid combinations exit 2; an existing branch or file exits 1 with a suggestion; JSON reports what was created |
+| 3 | `export --as branch` and `--as patch` work with their flags and defaults; invalid combinations exit 2; an existing branch or file exits 1 with a suggestion; JSON reports what was created; an export whose commits touch a masked path is refused (exit 1, the paths named) unless `--include-masked` is passed, and the paths are in the JSON |
 | 4 | `make test` passes with the new tests |
 | 5 | `clone.sh` prints no FAIL for the export section, the patch applies with `git apply` on the base commit, the docs describe the workflow and limits, and `make lint test`, `make cross` and `make e2e` pass |

@@ -40,6 +40,8 @@ pb image build proxy shell >/dev/null || { echo "image build failed"; exit 1; }
 echo "== host repository"
 G init -q -b main
 printf 'SECRET=committed\n' >"$REPO/.env"
+# .sandboxignore is gitignored: the host's file masks the tracked secret, the clone has none.
+printf '.sandboxignore\n' >"$REPO/.gitignore"
 printf '/.env\n' >"$REPO/.sandboxignore"
 printf 'one\n' >"$REPO/a.txt"
 mkdir "$REPO/.husky"
@@ -78,6 +80,7 @@ check "only committed content: the edit is absent" test "$(sx "$NAME" 'tail -1 a
 check "untracked file absent" sx "$NAME" '! test -e new.txt'
 check "untracked secret absent" sx "$NAME" '! test -e .env.local'
 check "tracked masked file is empty" test -z "$(sx "$NAME" 'cat .env')"
+check "the gitignored .sandboxignore is not in the clone" sx "$NAME" '! test -e .sandboxignore'
 check "no remote" test -z "$(sx "$NAME" 'git remote')"
 check "no host configuration value" sx "$NAME" '! git config --list | grep -q host'
 check "no hook" test "$(sx "$NAME" 'find .git/hooks -type f 2>/dev/null | wc -l')" = 0
@@ -109,7 +112,9 @@ check "ls has a MODE column showing clone" grep -Eq "^NAME +AGENT +MODE " "$OUT"
 check "ls shows the clone sandbox in mode clone" grep -Eq "^$NAME +shell +clone " "$OUT"
 pb ls -o json >"$OUT"
 check "ls JSON has mode and clone path" test "$(json ".[] | select(.name == \"$NAME\") | .mode + \"|\" + .clone")" = "clone|$CLONE"
+sx "$NAME" ': > .sandboxignore; mkdir -p .podbox; echo "rules: []" > .podbox/policy.yaml'
 check "restart" restart "$NAME"
+check "an emptied .sandboxignore written by the agent unmasks nothing" test -z "$(sx "$NAME" 'cat .env')"
 check "still masked after the restart" test -z "$(sx "$NAME" 'cat .env')"
 check "the agent's commit survives the restart" test "$(sx "$NAME" 'git log --oneline | wc -l')" = 3
 check "host repository still unchanged after the restart" test "$(hostprint)" = "$BEFORE"

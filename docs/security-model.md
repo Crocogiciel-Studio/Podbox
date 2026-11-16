@@ -84,11 +84,14 @@ How the clone is made, and why:
 
 - podbox clones from a `file://` URL with `--no-hardlinks`. A plain-path clone copies the whole object directory, including unreachable objects such as a deleted secret; the `file://` transport sends only what the cloned branch reaches, and no object is shared or hard-linked with the host repository, so the agent cannot alter the host's object store.
 - The clone starts from an empty template directory, so no host hook is installed, and `origin` and the branch tracking are removed, so no remote or URL remains. podbox checks the fresh configuration holds none.
+- The clone is made with git's global and system configuration ignored, so an `insteadOf` or a protocol rule of the host cannot redirect or refuse it, and from a percent-encoded `file://` URL, so a path with spaces or `#` is read as itself. The Windows form of that URL (a drive path) is designed for but untested.
 - The clone lives in `<state>/clones/<name>`, outside the sandbox's own state directory that the proxy container mounts, so the proxy never sees files the agent wrote. It is still inside podbox's state directory, so the workspace refusal (`CheckRoot`) is applied to the project path only and never to the clone, and the mask engine walks the clone like any workspace.
 
 Why `.git` is writable in a clone: the shared-mode protections exist because git on the host trusts a git directory the agent can write. Here that directory is the agent's own, and the host never runs git inside it. Everything that runs git on the host goes through one package (`internal/hostgit`) with an environment stripped of every `GIT_*` variable and with fsmonitor, hooks and external protocols disabled, and it runs only on the host repository. All the git protections are switched off in one place (`gitguard.Guard`).
 
-Masks, `.sandboxignore`, the network policy, the agent context and every container hardening guarantee are the same as in shared mode. A tracked file masked by `.sandboxignore` is empty in the agent's view; the agent can still commit it as emptied.
+Masks, `.sandboxignore`, the network policy, the agent context and every container hardening guarantee are the same as in shared mode. The configuration files (`.sandboxignore`, `.podbox/policy.yaml`) are read from the host project, snapshotted at creation and reloaded only by `podbox policy reload`, as in shared mode: the clone's copies are ignored, because the agent can rewrite them. Only the tree the masks are resolved against is the clone. A tracked file masked by a pattern is empty in the agent's view even when the pattern's file is untracked or gitignored on the host; the agent can still commit the file as emptied, which is why a later export must flag masked paths.
+
+A podbox that predates this mode ignores the mode of a clone sandbox's record and would mount the project directory: remove clone sandboxes before downgrading.
 
 The commits the agent makes stay in the clone. Limits: submodules and LFS only as a plain clone gives them; no git identity is set; there is no export of the agent's work to the host in this release.
 
