@@ -113,3 +113,36 @@
 | 1 filter falsifies the diff | `filter.x.clean = echo harmless` with `evil.sh filter=x` and a required process filter: raw bytes in the patch, no `+harmless`, WARNING line, per-file conversion, JSON filters; a hanging clean and process filter is never run | yes: ran the new script against a build of 8d4f142, 20 of 115 checks failed, these among them |
 | 2 one NUL hides a file | script with one NUL: hidden by default (stub with size, first bytes, flag), `binary_hidden`, visible with `--show-binary`, real binary printed only on request, `--stat` plus `--show-binary` exit 2 | yes, same run |
 | per-file cap | one 36 MB file gives a stub and `too_large` while other files stay; 10 files past 4 MiB exit 1 | yes, same run |
+
+## Run 6 (phase 3)
+
+- Head: `4bada2e`
+- Phase: 3 (`podbox export`)
+- Left: no Mac or Windows check; git 2.29 (the floor) not exercised, the suite ran on git 2.53 on the host and 2.39 in the agent image; the Windows paths of the patch file are not tried; a bundle produced by a hostile git binary in the sandbox (as opposed to a hostile repository) is covered by unit tests with a fake stream only, since the agent cannot replace `git` in the image
+- Design:
+  - `hostgit.Host` (methods, not the package functions the plan names) runs every host command with the host's global and system configuration ignored, `HOME` in a private directory, hooks off, `maintenance.auto=false`; `ImportBranch` takes a `check` callback that sees the fetched tip before the branch is created, so the ancestry, masks and warnings are decided on objects the host holds
+  - the bundle is `git bundle create - HEAD ^<base>`, so no agent-chosen ref name reaches an argument; the host requires one head, `HEAD`, equal to the HEAD read just before
+  - the file list, NUL scan and commit list of a branch export come from the host (`diff-tree`, `diff --text` into the diff's `sectionWriter`, `log`); for a patch they come from the sandbox and `host_verified` is false
+  - masks: the forced and `.sandboxignore` patterns, parent directories and the recorded masks, also lower-cased; raw paths only
+  - not-exported counts come from `git status` in the sandbox on the hardened session; masked paths are left out because a masked tracked file is a device in the clone and always reads as changed
+  - the diff and export share `gitSession` (refactor commit)
+  - test knobs: `PODBOX_EXPORT_MAX_BYTES` (like `PODBOX_DIFF_TIMEOUT`), `Manager.MaxExport`
+- Deviations: the e2e is a new suite `test/e2e/cloneexport.sh` (wired into `make e2e` and CI), not a section of `clone.sh`; a detached HEAD is accepted with `--branch-name`; an agent that cannot `git add` a masked file (it is a device) commits the emptied secret with `update-index --cacheinfo`, which the suite does; one `sed -i` was run on a Go test file by mistake and reverted by hand (no script touched, all seven `test/e2e` scripts stay 100755)
+
+| Task | Validation | Result |
+| ---- | ---------- | ------ |
+| 1 | `go test ./internal/hostgit` (new ref, existing and current branch refused and untouched, no `FETCH_HEAD`, temporary ref gone, hook not fired, junk, truncated and missing-prerequisite bundles, name table) | pass |
+| 2 | `go test ./internal/sandbox` (real git as the sandbox: branch, patch applies, `O_EXCL`, symlink target, masked, rewritten history, replace graft, hostile config, `.git` tree entry, junk bundle, cap, refusals, argv hardening) | pass |
+| 3 | `go test ./internal/cli` (text, JSON shape, flag combinations and exit codes) | pass |
+| 4 | `make test` | pass |
+| 5 | `test/e2e/cloneexport.sh`, README, security model, CONTRIBUTING | 141 passed, 0 failed |
+| 6 | `make lint test`, `make cross`, `make e2e`, `git ls-files -s test/e2e` | all exit 0 |
+
+| Safety case | Fails without its fix |
+| ----------- | --------------------- |
+| replace objects ignored | yes: unit test and e2e (patch holds the fake) against a build without `GIT_NO_REPLACE_OBJECTS` |
+| object checks on fetch | yes: unit and e2e (`.git` tree entry accepted) against a build without the fsck options |
+| host hooks off | yes: unit (hook fired) and e2e (host hook marker) against a build without `core.hooksPath=/dev/null` |
+| masked refusal | yes: e2e against a build without it (7 checks) |
+| patch formatting overrides | yes: e2e (injected header and signature) against a build without `--no-add-header` and `--no-signature` |
+| combined mutant build of all of the above | e2e: 22 of 141 checks failed |

@@ -1,6 +1,6 @@
 ---
 objective: "A developer can run an agent on untrusted code in a podbox clone sandbox, review what it changed with podbox diff, and bring its commits back to the host as a new branch or a patch without the agent ever touching the host repository."
-status: in-progress
+status: implemented
 ---
 
 # Plan: Clone mode

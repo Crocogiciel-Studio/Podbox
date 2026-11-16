@@ -61,3 +61,17 @@
 | `make e2e` (evasion 187, lifecycle 24, agentctx 43, clone 66, clonediff 115 passed, 0 failed) | 0 | |
 | new clonediff.sh against a build of 8d4f142 | 20 failed, 95 passed | expected: shows the deal breakers were real |
 | `git ls-files -s test/e2e` | six scripts 100755 | |
+
+## Round 6 (phase 3)
+
+- Head: `4bada2e`
+- Uncommitted changes: no
+- Verdict: PASS
+
+| Check | Exit | Failure |
+| --- | --- | --- |
+| `make lint test` | 0 | |
+| `make cross` | 0 | |
+| `make e2e` (evasion 187, lifecycle 24, agentctx 43, clone 66, clonediff 115, cloneexport 141 passed, 0 failed) | 0 | |
+| `git ls-files -s test/e2e` | seven scripts 100755 | |
+| cloneexport.sh against a build without the five fixes | 22 failed, 119 passed | expected: shows the safety cases were real |
