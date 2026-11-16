@@ -93,3 +93,23 @@
 | 1 ignored tracked file | committed, staged-with--f and dropped-from-index files listed, content in the patch, JSON untracked false, ignored.log only counted | yes: ran the new script against a build of 3adfe9e, 26 of 93 checks failed, these among them |
 | 2 attributes | `* binary` plus `.git/info/attributes` `code.py -diff`: text readable, `binary_attr`, real binary still binary, same under `--stat` | yes, same run |
 | 3 silent C0 | BS and CR and BEL visible as `<U+0008>`, `<U+000D>`, `<U+0007>` in content and name | yes, same run; plus table tests over every C0, DEL and C1 |
+
+## Run 5 (phase 2, third repair)
+
+- Head: `d48635e`
+- Left: no Mac or Windows check; the e2e no longer has a case that makes git time out (nothing the diff runs can hang any more: filters, hooks, pager and fsmonitor are neutralised), so the timeout mapping (exit 124 and 137 to `ErrTimeout`) is covered by unit tests only; `text` and `eol` attribute conversions are not flagged and still apply to what git compares
+- Design:
+  - filters: the config is read with `git config --null --name-only --get-regexp '^filter\..*\.(clean|smudge|process|required)$'` (every source and include), then every name gets `clean=/bin/cat`, `smudge=/bin/cat`, `process=` (empty) and `required=false` through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (no "=" to split a name); a local experiment showed `required=false` is needed (an empty process with required=true fails) and that the result is the raw bytes; more than 100 filters refuses the diff
+  - `git check-attr -z --stdin filter ident working-tree-encoding` on the changed paths gives per-file `conversions`; JSON `filters` is the configured and attribute-named filters; text gets a WARNING line and per-file notes
+  - `--show-binary` (exclusive with `--stat`, exit 2): NUL files print cleaned, up to 256 KiB each with a "truncated, N bytes not shown" line; the default stub gives size, first bytes and the flag; JSON `binary_hidden`
+  - per-file cap: a streaming `sectionWriter` keeps at most 4 MiB of each file's patch (8 KiB for `--stat`), counts all bytes and looks for NUL in all of them; a text file past the cap becomes a "Too large" stub (`too_large`); the overall 32 MiB cap on retained output stays (10 files over 4 MiB hit it)
+  - HEAD-only paths are checked with `ls-files --others -- <200 paths>` and literal pathspecs, so a huge untracked tree cannot fail the diff
+  - look-alike spaces (Zs other than U+0020) are marked `<U+XXXX>` in names and content
+  - docs: shared-mode wording for the read-only `.git/config`, raw bytes and filter flags, `--show-binary`, per-file cap
+- Deviations: the stub of a NUL file shows its first 16 bytes with newline and tab as `?`; termsafe, the diff and its tests went into one commit
+
+| Deal breaker | New e2e cases | Fail on the previous build (8d4f142) |
+| ------------ | ------------- | ------------------------------------ |
+| 1 filter falsifies the diff | `filter.x.clean = echo harmless` with `evil.sh filter=x` and a required process filter: raw bytes in the patch, no `+harmless`, WARNING line, per-file conversion, JSON filters; a hanging clean and process filter is never run | yes: ran the new script against a build of 8d4f142, 20 of 115 checks failed, these among them |
+| 2 one NUL hides a file | script with one NUL: hidden by default (stub with size, first bytes, flag), `binary_hidden`, visible with `--show-binary`, real binary printed only on request, `--stat` plus `--show-binary` exit 2 | yes, same run |
+| per-file cap | one 36 MB file gives a stub and `too_large` while other files stay; 10 files past 4 MiB exit 1 | yes, same run |
