@@ -60,7 +60,9 @@ git mv ren.txt ren2.txt 2>/dev/null; sed "5s/.*/five/" ren2.txt > ren2.tmp && mv
 echo untracked > u.txt
 printf "\000\001\002binary" > bin.dat
 printf "line\033]52;c;aGVsbG8=\007\033[2J\033[31mred\033[0m\015overwrite\302\233x end\n" > "$(printf "evil\033[31mname\033]0;pwned\007.txt")"
-printf "x\n" > "$(printf "new\nline.txt")"'
+printf "x\n" > "$(printf "new\nline.txt")"
+echo ignored.log > .gitignore; echo hidden > ignored.log
+mkdir nested && git -C nested init -q && git -C nested -c user.name=n -c user.email=n@example.org commit -q --allow-empty -m nested'
 STATE=$(agentstate)
 
 echo "== diff"
@@ -80,8 +82,10 @@ check "the patch holds the untracked file" grep -q '^+untracked$' "$OUT"
 check "the patch holds the deletion" grep -q '^-to delete$' "$OUT"
 check "the patch holds a binary patch" grep -q '^GIT binary patch' "$OUT"
 check "text output is printable: no ESC, CR, BEL or C1" printable "$OUT"
-check "the hostile content is reduced to its text" grep -q 'linered' "$OUT"
-check "the hostile name is reduced to its text" grep -q 'evilname.txt' "$OUT"
+check "the hostile content keeps its payload visible" grep -q 'line<OSC>52;c;aGVsbG8=<CSI>2J<CSI>31mred<CSI>0moverwrite<U+009B>x end' "$OUT"
+check "the hostile name keeps its payload visible" grep -q 'evil<CSI>31mname<OSC>0;pwned.txt' "$OUT"
+check "ignored files are counted, not hidden" grep -Eq '^[0-9]+ ignored path\(s\) not shown' "$OUT"
+check "a nested repository is flagged" grep -q 'nested.*\[nested repository' "$OUT"
 check "a newline in a name stays on one line" grep -q 'new?line.txt' "$OUT"
 
 pb diff "$NAME" --stat >"$OUT"
@@ -93,6 +97,9 @@ check "JSON files: path, status, counts" test "$(json '.files[] | select(.path =
 check "JSON rename has old_path" test "$(json '.files[] | select(.status == "renamed") | .old_path + ">" + .path')" = "ren.txt>ren2.txt"
 check "JSON untracked and binary flags" test "$(json '.files[] | select(.path == "bin.dat") | [.binary, .untracked] | join(" ")')" = "true true"
 check "JSON committed file is not untracked" test "$(json '.files[] | select(.path == "committed.txt") | .untracked')" = false
+check "JSON counts the ignored paths" test "$(json '.ignored >= 1')" = true
+check "JSON flags the nested repository" test "$(json '.files[] | select(.path == "nested") | .gitlink')" = true
+check "JSON flags no other gitlink" test "$(json '[.files[] | select(.gitlink)] | length')" = 1
 check "JSON has the sanitized patch" test "$(json '.patch | contains("+uncommitted line")')" = true
 check "JSON raw bytes hold no control byte" printable "$OUT"
 check "JSON strings hold no control byte" test "$(jq -r '[.patch, (.files[] | .path, .old_path // "")] | join("")' "$OUT" | LC_ALL=C tr -d '\n\t' | LC_ALL=C grep -c '[^ -~]')" = 0
@@ -104,12 +111,35 @@ check "agent index, config, objects and status unchanged by the diff" test "$(ag
 check "no temporary index left" sx "$NAME" '! ls /tmp/podbox-diff-* >/dev/null 2>&1'
 check "host repository unchanged" test "$(hostprint)" = "$BEFORE"
 
+echo "== git replace cannot fake the base"
+PATHS=$(pb diff "$NAME" --stat -o json | jq -c '[.files[].path]')
+sx "$NAME" "export GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@example.org GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@example.org GIT_INDEX_FILE=/tmp/e2e-ix
+git add -A >/dev/null 2>&1; T=\$(git write-tree); C=\$(git commit-tree \$T -m fake); rm -f /tmp/e2e-ix; git replace $HEAD \$C"
+check "the agent planted a replace ref for the base" sx "$NAME" "git for-each-ref refs/replace | grep -q $HEAD"
+pb diff "$NAME" -o json >"$OUT"
+check "the diff still lists the same files" test "$(json '[.files[].path]' | jq -c .)" = "$PATHS"
+check "the diff still shows the modification" test "$(json '.files[] | select(.path == "a.txt") | .status')" = modified
+check "the patch is still there" test "$(json '.patch | contains("+uncommitted line")')" = true
+
 echo "== a hostile clone configuration"
 sx "$NAME" 'printf "[core]\n\tpager = touch /tmp/pager-ran\n[diff]\n\texternal = touch /tmp/external-ran\n[diff \"x\"]\n\ttextconv = touch /tmp/textconv-ran\n\tcommand = touch /tmp/driver-ran\n" >> .git/config; echo "*.txt diff=x" > .gitattributes'
 pb diff "$NAME" >"$OUT" 2>/dev/null
 check "plain patch still printed" grep -q '^+uncommitted line$' "$OUT"
 check "no pager, external diff or textconv ran" sx "$NAME" '! ls /tmp/pager-ran /tmp/external-ran /tmp/textconv-ran /tmp/driver-ran >/dev/null 2>&1'
 sx "$NAME" 'rm .gitattributes'
+sx "$NAME" 'mkdir -p .git/hooks; printf "#!/bin/sh\ntouch /tmp/hook-ran\nsleep 600\n" > .git/hooks/post-index-change; chmod +x .git/hooks/post-index-change'
+pb diff "$NAME" --stat >"$OUT" 2>"$ERR"
+check "a post-index-change hook does not run and does not hang the diff" test $? -eq 0 && sx "$NAME" '! test -e /tmp/hook-ran'
+sx "$NAME" 'rm .git/hooks/post-index-change'
+sx "$NAME" 'printf "[filter \"slow\"]\n\tclean = sleep 600\n" >> .git/config; printf "a.txt filter=slow\nhang.txt filter=slow\n" > .gitattributes; echo x > hang.txt'
+PODBOX_DIFF_TIMEOUT=5 pb diff "$NAME" >"$OUT" 2>"$ERR"
+check "a hanging clean filter: exit 1" test $? -eq 1
+check "a hanging clean filter: nothing printed" test ! -s "$OUT"
+check "a hanging clean filter: the timeout is named" grep -q 'timed out after 5s' "$ERR"
+check "the hung filter does not outlive the diff" eventually 15 sx "$NAME" '! grep -l "sleep 6[0]0" /proc/[0-9]*/cmdline 2>/dev/null | grep -q .'
+sx "$NAME" 'rm -f .gitattributes hang.txt; git config --remove-section filter.slow'
+pb diff "$NAME" --stat >"$OUT" 2>/dev/null
+check "the diff works again once the filter is gone" grep -q 'a.txt' "$OUT"
 
 echo "== refusals"
 pb stop "$NAME" >/dev/null

@@ -62,7 +62,7 @@ podbox policy show claude-my-project
 | `ls` | list sandboxes (name, agent, mode `shared` or `clone`, state, proxy, workspace), from podman labels and the state directory; a clone left with no sandbox shows with state `missing` |
 | `exec <name> -- <cmd>...` | run a command in the workspace, exit with its code |
 | `attach <name>` | open a new agent session in a running sandbox |
-| `diff <name> [--stat]` | what the agent changed in a running clone sandbox since its base commit: commits, uncommitted changes and untracked files, as a file summary, a total and a patch; `--stat` stops after the summary; exit 2 for a shared sandbox, 4 for an unknown one, 1 when the sandbox is stopped or the patch exceeds 32 MiB (use `--stat`) |
+| `diff <name> [--stat]` | what the agent changed in a running clone sandbox since its base commit: commits, uncommitted changes and untracked files, as a file summary, a total and a patch; `--stat` stops after the summary; exit 2 for a shared sandbox, 4 for an unknown one, 1 when the sandbox is stopped, a git command times out (120 s) or the patch exceeds 32 MiB (use `--stat`) |
 | `git-check <name> [--accept]` | compare `.git` with the fingerprint taken at creation, exit 6 on suspicious changes; `--accept` re-records it; says it does not apply (exit 0) to a clone sandbox |
 | `policy show\|allow\|deny\|reload <name> [host]` | inspect and change the allowlist from the host; `reload --forget-missing` also drops recorded masks found nowhere |
 | `policy log <name> [--denied] [--follow] [--since 10m]` | the proxy's decisions, with the fix command for each refusal; exit 4 for an unknown sandbox, 1 when it is not running |
@@ -99,10 +99,12 @@ podbox diff claude-project -o json
 
 `diff` needs a running clone sandbox (it never starts one) and compares the clone's files with the base commit `create` printed: commits the agent made, uncommitted changes to tracked files and untracked files that git does not ignore. It reads the clone with git inside the sandbox, on a temporary index, so the agent's index, configuration and objects are untouched and your repository is never read.
 
-- Text: one line per file (`STATUS`, `ADDED`, `DELETED`, `PATH`; `untracked` for a file git does not track yet, `-` counts for a binary), a total, then the patch.
-- JSON: `name`, `base`, `files` (`path`, `old_path` for a rename, `status` of `added`, `modified`, `deleted`, `renamed` or `typechange`, `added`, `deleted`, `binary`, `untracked`) and `patch`, which `--stat` omits. No change gives an empty `files` array.
-- Terminal escape sequences, control characters and bidirectional overrides (also in file names) are removed or made visible before anything is printed, so what you read cannot move the cursor, set the clipboard or hide code. A file name with a newline or tab shows `?` there.
-- The output is capped at 32 MiB; past it `diff` exits 1 with nothing printed and suggests `--stat`.
+- Text: one line per file (`STATUS`, `ADDED`, `DELETED`, `PATH`; `untracked` for a file git does not track yet, `-` counts for a binary, a note for a nested repository or submodule, of which only the commit is compared), a total, a count of ignored paths, then the patch.
+- JSON: `name`, `base`, `files` (`path`, `old_path` for a rename, `status` of `added`, `modified`, `deleted`, `renamed`, `typechange`, `unmerged` or `unknown`, `added`, `deleted`, `binary`, `untracked`, `gitlink`), `ignored` (with `ignored_capped` when the count stopped at a limit) and `patch`, which `--stat` omits. No change gives an empty `files` array. `path` and `old_path` are for display only: cleaning them is lossy, so never use them to look a file up.
+- Files that git ignores (a `.gitignore` the agent edited, build directories) are not in the diff or the patch: only their count is shown, so look in the clone when it is not what you expect.
+- Terminal escape sequences, control characters and invisible code points are made inert before anything is printed, and none is silently dropped: an escape sequence becomes a marker (`<CSI>`, `<OSC>`, `<ESC>`, ...) followed by its payload as plain text, and bidirectional controls, zero-width characters, Unicode tags and C1 controls become `<U+XXXX>`. So what you read cannot move the cursor or set the clipboard, and a hidden payload shows. A file name with a newline or tab shows `?` there.
+- It is a point-in-time view of a live worktree, not a snapshot of what an export will bring: the agent can keep working while you read.
+- Each git command is stopped after 120 seconds (exit 1, "git timed out"), and the output is capped at 32 MiB; past it `diff` exits 1 with nothing printed and suggests `--stat`.
 
 `podbox export` comes next. Until then, read the clone at the path `create` printed.
 
