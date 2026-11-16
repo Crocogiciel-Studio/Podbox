@@ -31,12 +31,24 @@ func Execute() int {
 	return run(os.Args[1:])
 }
 
+// interruptContext is cancelled by the first SIGINT or SIGTERM, so a command's
+// cleanup (temporary files and refs) runs. The handler is removed at that
+// point: a second signal takes its default effect and kills a command that
+// ignores its context (exec, attach, a blocking read).
+func interruptContext() (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
+}
+
 func run(args []string) int {
 	a := &app{out: &output.Printer{Mode: output.Text, Out: os.Stdout, Err: os.Stderr}}
 	root := a.newRoot()
 	root.SetArgs(args)
-	// An interrupt cancels the command, so its cleanup (temporary files and refs) runs.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := interruptContext()
 	defer stop()
 	err := root.ExecuteContext(ctx)
 	if err == nil {
