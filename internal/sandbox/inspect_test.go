@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -25,7 +26,7 @@ type gitRT struct {
 	stdin  []byte            // what the forced add received
 	out    map[string][]byte // see key
 	code   int
-	big    bool
+	bigAll bool // the patch is many files of text past the overall cap
 	stderr string
 }
 
@@ -86,6 +87,10 @@ func key(argv []string) string {
 			return "head"
 		}
 		return "basetree"
+	case "config":
+		return "config"
+	case "check-attr":
+		return "check-attr"
 	case "add":
 		if contains(c, "-f") {
 			return "addforce"
@@ -106,12 +111,16 @@ func key(argv []string) string {
 func (g *gitRT) Exec(_ context.Context, _ string, s runtime.ExecSpec) (int, error) {
 	g.specs = append(g.specs, s)
 	k := key(s.Command)
-	if g.big && k == "patch" {
-		s.Stdout.Write(g.out[k])
-		if _, err := s.Stdout.Write(make([]byte, maxOutput+1)); err != nil {
-			return -1, err
+	if g.bigAll && k == "patch" {
+		for i := 0; i < 10; i++ {
+			if _, err := s.Stdout.Write([]byte(section(fmt.Sprintf("f%d", i), "100644", strings.Repeat("x", maxFilePatch)))); err != nil {
+				return -1, err
+			}
 		}
 		return 0, nil
+	}
+	if k == "config" && len(g.out["config"]) == 0 && g.code == 0 {
+		return 1, nil // no filter configured
 	}
 	if g.code != 0 && k != "rm" {
 		io.WriteString(s.Stderr, g.stderr)
@@ -170,15 +179,15 @@ func TestDiffRefusals(t *testing.T) {
 	ctx := context.Background()
 	shared := cloneMetaFor()
 	shared.Mode = ""
-	if _, err := newDiffManager(t, shared, &gitRT{state: "running"}).Diff(ctx, "s", true); !errors.Is(err, ErrNotClone) {
+	if _, err := newDiffManager(t, shared, &gitRT{state: "running"}).Diff(ctx, "s", DiffOptions{Patch: true}); !errors.Is(err, ErrNotClone) {
 		t.Errorf("shared: %v", err)
 	}
-	if _, err := newDiffManager(t, Meta{}, &gitRT{state: "running"}).Diff(ctx, "s", true); !errors.Is(err, ErrNotFound) {
+	if _, err := newDiffManager(t, Meta{}, &gitRT{state: "running"}).Diff(ctx, "s", DiffOptions{Patch: true}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown: %v", err)
 	}
 	for _, st := range []string{"", "exited"} {
 		rt := &gitRT{state: st}
-		_, err := newDiffManager(t, cloneMetaFor(), rt).Diff(ctx, "s", true)
+		_, err := newDiffManager(t, cloneMetaFor(), rt).Diff(ctx, "s", DiffOptions{Patch: true})
 		if !errors.Is(err, ErrNotRunning) || !strings.Contains(err.Error(), "podbox start s") {
 			t.Errorf("state %q: %v", st, err)
 		}
@@ -189,7 +198,7 @@ func TestDiffRefusals(t *testing.T) {
 	bad := cloneMetaFor()
 	bad.Base = "--output=/etc/x"
 	rt := &gitRT{state: "running"}
-	if _, err := newDiffManager(t, bad, rt).Diff(ctx, "s", true); err == nil || len(rt.specs) != 0 {
+	if _, err := newDiffManager(t, bad, rt).Diff(ctx, "s", DiffOptions{Patch: true}); err == nil || len(rt.specs) != 0 {
 		t.Errorf("invalid base accepted: %v", err)
 	}
 }
@@ -197,7 +206,7 @@ func TestDiffRefusals(t *testing.T) {
 func TestDiffCommands(t *testing.T) {
 	rt := &gitRT{state: "running", out: diffOut()}
 	m := newDiffManager(t, cloneMetaFor(), rt)
-	res, err := m.Diff(context.Background(), "s", true)
+	res, err := m.Diff(context.Background(), "s", DiffOptions{Patch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +235,7 @@ func TestDiffCommands(t *testing.T) {
 			}
 			continue
 		}
-		if (s.Stdin != nil) != (k == "addforce") || s.Interactive != (k == "addforce") {
+		if (s.Stdin != nil) != (k == "addforce" || k == "check-attr") || s.Interactive != (s.Stdin != nil) {
 			t.Errorf("%s: stdin %v", k, s.Stdin)
 		}
 		j := strings.Join(s.Command, " ")
@@ -243,7 +252,7 @@ func TestDiffCommands(t *testing.T) {
 				t.Errorf("%s: env %s=%q", j, k, s.Env[k])
 			}
 		}
-		onAgentIndex := map[string]bool{"cached": true, "deleted": true, "head": true, "basetree": true, "others": true}
+		onAgentIndex := map[string]bool{"config": true, "cached": true, "deleted": true, "head": true, "basetree": true, "others": true}
 		hasTemp := strings.HasPrefix(s.Env["GIT_INDEX_FILE"], "/tmp/podbox-diff-")
 		if onAgentIndex[k] == hasTemp {
 			t.Errorf("%s: GIT_INDEX_FILE=%q", k, s.Env["GIT_INDEX_FILE"])
@@ -261,20 +270,20 @@ func TestDiffCommands(t *testing.T) {
 		}
 	}
 	// the temporary index is built from the base, then forced, then listed, then the rest added
-	want := []string{"read-tree", "cached", "deleted", "head", "basetree", "addforce", "untracked", "addall", "raw", "plain", "patch", "ignored", "rm"}
+	want := []string{"config", "read-tree", "cached", "deleted", "head", "basetree", "addforce", "untracked", "addall", "raw", "plain", "patch", "check-attr", "ignored", "rm"}
 	if strings.Join(order, " ") != strings.Join(want, " ") {
 		t.Errorf("order %v", order)
 	}
-	if rt.specs[0].Env["GIT_INDEX_FILE"] != idx {
+	if rt.specs[1].Env["GIT_INDEX_FILE"] != idx {
 		t.Errorf("temporary index %q not the one removed", idx)
 	}
 	rt.specs = nil
-	if res, err = m.Diff(context.Background(), "s", false); err != nil || res.Patch != nil {
+	if res, err = m.Diff(context.Background(), "s", DiffOptions{}); err != nil || res.Patch != nil {
 		t.Fatal(res, err)
 	}
 	m.GitTimeout = 7 * time.Second
 	rt.specs = nil
-	m.Diff(context.Background(), "s", false)
+	m.Diff(context.Background(), "s", DiffOptions{})
 	if rt.specs[0].Command[3] != "7" {
 		t.Errorf("timeout %v", rt.specs[0].Command[:4])
 	}
@@ -284,18 +293,18 @@ func TestDiffCommands(t *testing.T) {
 func TestDiffHeadOnlyPaths(t *testing.T) {
 	out := diffOut()
 	out["cached"] = nul("a.txt")
-	out["others"] = nul("hidden.txt", "other")
+	out["others"] = nul("hidden.txt")
 	rt := &gitRT{state: "running", out: out}
-	if _, err := newDiffManager(t, cloneMetaFor(), rt).Diff(context.Background(), "s", false); err != nil {
+	if _, err := newDiffManager(t, cloneMetaFor(), rt).Diff(context.Background(), "s", DiffOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if string(rt.stdin) != "hidden.txt\x00" {
 		t.Errorf("forced %q", rt.stdin)
 	}
-	// deleted from the disk: not forced
-	out["others"] = nul("other")
+	// not on disk: not forced
+	out["others"] = nil
 	rt = &gitRT{state: "running", out: out}
-	newDiffManager(t, cloneMetaFor(), rt).Diff(context.Background(), "s", false)
+	newDiffManager(t, cloneMetaFor(), rt).Diff(context.Background(), "s", DiffOptions{})
 	if rt.stdin != nil {
 		t.Errorf("forced %q", rt.stdin)
 	}
@@ -303,7 +312,7 @@ func TestDiffHeadOnlyPaths(t *testing.T) {
 	out = diffOut()
 	out["deleted"] = nul("hidden.txt")
 	rt = &gitRT{state: "running", out: out}
-	newDiffManager(t, cloneMetaFor(), rt).Diff(context.Background(), "s", false)
+	newDiffManager(t, cloneMetaFor(), rt).Diff(context.Background(), "s", DiffOptions{})
 	if rt.stdin != nil {
 		t.Errorf("forced %q", rt.stdin)
 	}
@@ -319,7 +328,7 @@ func TestDiffBinaryByContent(t *testing.T) {
 	renamed := "diff --git a/old.bin b/new.bin\nsimilarity index 100%\nrename from old.bin\nrename to new.bin\n"
 	out["patch"] = []byte(section("code.py", "100644", "print(1)") + nulSection + renamed)
 	rt := &gitRT{state: "running", out: out}
-	res, err := newDiffManager(t, cloneMetaFor(), rt).Diff(context.Background(), "s", true)
+	res, err := newDiffManager(t, cloneMetaFor(), rt).Diff(context.Background(), "s", DiffOptions{Patch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,8 +342,18 @@ func TestDiffBinaryByContent(t *testing.T) {
 	if !ren.Binary || ren.BinaryAttr {
 		t.Errorf("a binary renamed without content change keeps git's verdict: %+v", ren)
 	}
+	if !bin.BinaryHidden || code.BinaryHidden {
+		t.Errorf("hidden: %+v %+v", bin, code)
+	}
 	p := *res.Patch
-	if !strings.Contains(p, "+print(1)") || strings.Contains(p, "+<U+0000>") || !strings.Contains(p, "diff --git a/bin.dat b/bin.dat\nnew file mode 100644\n") || !strings.Contains(p, "Binary file: contains NUL bytes, content not shown") || strings.Contains(p, "@@ -0,0 +1 @@\n+<U+0000>") {
+	if !strings.Contains(p, "--show-binary") || !strings.Contains(p, `starts with "<U+0000><U+0001>bin`) {
+		t.Errorf("stub:\n%s", p)
+	}
+	shown, err := newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", out: out}).Diff(context.Background(), "s", DiffOptions{Patch: true, ShowBinary: true})
+	if err != nil || shown.Files[1].BinaryHidden || !shown.Files[1].Binary || !strings.Contains(*shown.Patch, "+<U+0000><U+0001>bin") {
+		t.Errorf("--show-binary: %+v %v", shown.Files[1], err)
+	}
+	if !strings.Contains(p, "+print(1)") || strings.Contains(p, "+<U+0000>") || !strings.Contains(p, "diff --git a/bin.dat b/bin.dat\nnew file mode 100644\n") || strings.Contains(p, "@@ -0,0 +1 @@\n+<U+0000>") {
 		t.Errorf("patch:\n%s", p)
 	}
 	if strings.Count(p, "diff --git") != 3 {
@@ -342,18 +361,110 @@ func TestDiffBinaryByContent(t *testing.T) {
 	}
 }
 
-// --stat reads the patch for the content check but never fails on its size.
-func TestDiffStatTruncatedPatch(t *testing.T) {
+// A big file does not block the others; many big files hit the overall cap.
+func TestDiffPerFileCap(t *testing.T) {
 	out := diffOut()
-	out["patch"] = []byte(section("a.txt", "100644", "x") + section("hidden.txt", "100644", "h"))
-	rt := &gitRT{state: "running", out: out, big: true}
-	res, err := newDiffManager(t, cloneMetaFor(), rt).Diff(context.Background(), "s", false)
-	if err != nil || res.Patch != nil || len(res.Files) != 2 {
-		t.Fatalf("%+v %v", res, err)
+	big := section("a.txt", "100644", strings.Repeat("y", maxFilePatch+10))
+	bigBin := section("hidden.txt", "100644", "\x00"+strings.Repeat("z", maxFilePatch+10))
+	out["patch"] = []byte(big + bigBin)
+	rt := &gitRT{state: "running", out: out}
+	res, err := newDiffManager(t, cloneMetaFor(), rt).Diff(context.Background(), "s", DiffOptions{Patch: true, ShowBinary: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-	// the first section was read whole, the last one was cut and is not trusted
-	if res.Files[0].BinaryAttr || res.Files[0].Binary {
-		t.Errorf("%+v", res.Files[0])
+	a, h := res.Files[0], res.Files[1]
+	if !a.TooLarge || a.Binary || !h.Binary || h.BinaryHidden || h.TooLarge {
+		t.Errorf("flags %+v %+v", a, h)
+	}
+	p := *res.Patch
+	if !strings.Contains(p, "Too large: ") || strings.Contains(p, "yyyyyyyyyy") || !strings.Contains(p, "... truncated, ") || strings.Count(p, "z") > maxBinaryShown {
+		t.Errorf("patch has %d bytes", len(p))
+	}
+	if len(p) > 2*maxBinaryShown {
+		t.Errorf("patch has %d bytes", len(p))
+	}
+	// --stat: the big file is not "too large", it has no patch at all
+	res, err = newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", out: out}).Diff(context.Background(), "s", DiffOptions{})
+	if err != nil || res.Files[0].TooLarge || !res.Files[1].Binary || !res.Files[1].BinaryHidden || res.Patch != nil {
+		t.Errorf("%+v %v", res.Files, err)
+	}
+}
+
+func TestSectionWriter(t *testing.T) {
+	p := section("a", "100644", "one") + section("b", "100644", "t\x00wo") + section("c", "100644", strings.Repeat("k", 100))
+	for _, chunk := range []int{1, 3, 11, 12, 13, 50, len(p)} {
+		w := newSectionWriter(60, 1<<20)
+		for i := 0; i < len(p); i += chunk {
+			end := i + chunk
+			if end > len(p) {
+				end = len(p)
+			}
+			w.Write([]byte(p[i:end]))
+		}
+		w.finish()
+		if len(w.secs) != 3 || w.secs[0].nul || !w.secs[1].nul || w.secs[2].nul {
+			t.Fatalf("chunk %d: %d sections %+v", chunk, len(w.secs), w.secs)
+		}
+		if !bytes.HasPrefix(w.secs[1].data, []byte("diff --git a/b b/b")) || len(w.secs[2].data) != 60 || w.secs[2].size != int64(len(section("c", "100644", strings.Repeat("k", 100)))) {
+			t.Errorf("chunk %d: %q %d", chunk, w.secs[1].data, w.secs[2].size)
+		}
+	}
+	// a content line that reads like a header cannot split a section: it starts with a prefix
+	w := newSectionWriter(1000, 1<<20)
+	w.Write([]byte(section("a", "100644", "diff --git fake")))
+	w.finish()
+	if len(w.secs) != 1 {
+		t.Errorf("%d sections", len(w.secs))
+	}
+	// the total cap
+	w = newSectionWriter(1000, 100)
+	if _, err := w.Write([]byte(p)); !errors.Is(err, ErrTooLarge) || !w.exceeded() {
+		t.Errorf("no total cap: %v", err)
+	}
+}
+
+func TestDiffFiltersAreNeutralised(t *testing.T) {
+	out := diffOut()
+	out["config"] = nul("filter.x.clean", "filter.a.b.required", "filter.x.process")
+	out["check-attr"] = nul("a.txt", "filter", "x", "a.txt", "ident", "set", "hidden.txt", "working-tree-encoding", "utf-16", "hidden.txt", "filter", "unspecified", "a.txt", "ident", "unset")
+	rt := &gitRT{state: "running", out: out}
+	res, err := newDiffManager(t, cloneMetaFor(), rt).Diff(context.Background(), "s", DiffOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(res.Filters, ",") != "a.b,x" {
+		t.Errorf("filters %v", res.Filters)
+	}
+	if strings.Join(res.Files[0].Conversions, ",") != "filter=x,ident" || strings.Join(res.Files[1].Conversions, ",") != "working-tree-encoding=utf-16" {
+		t.Errorf("conversions %v %v", res.Files[0].Conversions, res.Files[1].Conversions)
+	}
+	for _, s := range rt.specs {
+		k := key(s.Command)
+		if k == "config" || k == "rm" {
+			if s.Env["GIT_CONFIG_COUNT"] != "" {
+				t.Errorf("%s runs with overrides before the filters are known", k)
+			}
+			continue
+		}
+		if s.Env["GIT_CONFIG_COUNT"] != "8" {
+			t.Errorf("%s: GIT_CONFIG_COUNT=%q", k, s.Env["GIT_CONFIG_COUNT"])
+			continue
+		}
+		got := map[string]string{}
+		for i := 0; i < 8; i++ {
+			got[s.Env[fmt.Sprintf("GIT_CONFIG_KEY_%d", i)]] = s.Env[fmt.Sprintf("GIT_CONFIG_VALUE_%d", i)]
+		}
+		for _, name := range []string{"x", "a.b"} {
+			if got["filter."+name+".clean"] != "/bin/cat" || got["filter."+name+".smudge"] != "/bin/cat" || got["filter."+name+".required"] != "false" {
+				t.Errorf("%s: filter %s not neutralised: %v", k, name, got)
+			}
+			if v, ok := got["filter."+name+".process"]; !ok || v != "" {
+				t.Errorf("%s: process of %s: %q %v", k, name, v, ok)
+			}
+		}
+	}
+	if _, err := filterOverrides(make([]string, maxFilters+1)); err == nil {
+		t.Error("too many filters accepted")
 	}
 }
 
@@ -363,7 +474,7 @@ func TestDiffJSONFields(t *testing.T) {
 		"0\t0\trun.sh\x000\t0\tln\x000\t0\tsub\x00")
 	out["plain"] = nil
 	out["patch"] = []byte(section("run.sh", "100755", "x") + section("ln", "120000", "t") + section("sub", "160000", "s"))
-	res, err := newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", out: out}).Diff(context.Background(), "s", false)
+	res, err := newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", out: out}).Diff(context.Background(), "s", DiffOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,18 +502,18 @@ func TestNameNotes(t *testing.T) {
 
 func TestDiffCapTimeoutAndFailure(t *testing.T) {
 	ctx := context.Background()
-	_, err := newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", big: true, out: diffOut()}).Diff(ctx, "s", true)
+	_, err := newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", bigAll: true, out: diffOut()}).Diff(ctx, "s", DiffOptions{Patch: true})
 	if !errors.Is(err, ErrTooLarge) {
 		t.Errorf("cap: %v", err)
 	}
 	for _, code := range []int{124, 137} {
-		_, err = newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", code: code}).Diff(ctx, "s", true)
-		if !errors.Is(err, ErrTimeout) || !strings.Contains(err.Error(), "timed out after 120s") || !strings.Contains(err.Error(), "hostile filter or hook") {
+		_, err = newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", code: code}).Diff(ctx, "s", DiffOptions{Patch: true})
+		if !errors.Is(err, ErrTimeout) || !strings.Contains(err.Error(), "timed out after 120s") || !strings.Contains(err.Error(), "hostile program") {
 			t.Errorf("exit %d: %v", code, err)
 		}
 	}
-	_, err = newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", code: 128, stderr: "fatal: bad\x1b]0;x\x07 thing\n"}).Diff(ctx, "s", true)
-	if err == nil || !strings.Contains(err.Error(), "git read-tree: exit status 128: fatal: bad<OSC>0;x<U+0007> thing") || strings.ContainsRune(err.Error(), 0x1b) || strings.Contains(err.Error(), "git exited") {
+	_, err = newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", code: 128, stderr: "fatal: bad\x1b]0;x\x07 thing\n"}).Diff(ctx, "s", DiffOptions{Patch: true})
+	if err == nil || !strings.Contains(err.Error(), "git config: exit status 128: fatal: bad<OSC>0;x<U+0007> thing") || strings.ContainsRune(err.Error(), 0x1b) || strings.Contains(err.Error(), "git exited") {
 		t.Errorf("failure: %v", err)
 	}
 }
@@ -410,7 +521,7 @@ func TestDiffCapTimeoutAndFailure(t *testing.T) {
 func TestIgnoredCountIsCapped(t *testing.T) {
 	out := diffOut()
 	out["ignored"] = []byte(strings.Repeat("x/\x00", maxIgnoredList/2))
-	res, err := newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", out: out}).Diff(context.Background(), "s", false)
+	res, err := newDiffManager(t, cloneMetaFor(), &gitRT{state: "running", out: out}).Diff(context.Background(), "s", DiffOptions{})
 	if err != nil || !res.IgnoredCapped || res.Ignored < 100 {
 		t.Errorf("%+v %v", res.Ignored, err)
 	}
@@ -459,12 +570,5 @@ func TestParseDiffAndSections(t *testing.T) {
 		if err == nil {
 			t.Errorf("%s: no error", name)
 		}
-	}
-	p := []byte(section("a", "100644", "x") + section("b", "100644", "diff --git fake"))
-	if s := splitSections(p); len(s) != 2 || !bytes.HasPrefix(s[1], []byte("diff --git a/b")) {
-		t.Errorf("sections %q", s)
-	}
-	if len(splitSections(nil)) != 0 {
-		t.Error("empty patch has sections")
 	}
 }

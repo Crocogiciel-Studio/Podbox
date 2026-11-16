@@ -115,10 +115,11 @@ func looksLikeMarker(b []byte) bool {
 // looks like another character, so it could hide code from a reviewer: the
 // format characters (Unicode category Cf: zero-width and joiner characters,
 // bidirectional controls, tags, soft hyphen, ...), the C1 controls, private
-// use and noncharacters, and a list of blanks and selectors outside Cf.
+// use and noncharacters, every space separator but the plain space (a
+// no-break space looks like one), and a list of blanks and selectors.
 func isInvisible(r rune) bool {
 	switch {
-	case unicode.Is(unicode.Cf, r), unicode.Is(unicode.Cc, r), unicode.Is(unicode.Co, r):
+	case unicode.Is(unicode.Cf, r), unicode.Is(unicode.Cc, r), unicode.Is(unicode.Co, r), unicode.Is(unicode.Zs, r) && r != ' ':
 		return true
 	case r >= 0xfdd0 && r <= 0xfdef, r&0xfffe == 0xfffe: // noncharacters
 		return true

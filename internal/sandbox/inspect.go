@@ -91,8 +91,16 @@ func (m *Manager) runIn(ctx context.Context, meta Meta, argv []string, env map[s
 	return out.buf.Bytes(), nil
 }
 
+// limitedWriter is stdout of a command with a cap: exceeded says it refused bytes.
+type limitedWriter interface {
+	io.Writer
+	exceeded() bool
+}
+
+func (w *capWriter) exceeded() bool { return w.over }
+
 // runInto is runIn with a stdin (nil for none) and the caller's writer.
-func (m *Manager) runInto(ctx context.Context, meta Meta, argv []string, env map[string]string, stdin io.Reader, out *capWriter) error {
+func (m *Manager) runInto(ctx context.Context, meta Meta, argv []string, env map[string]string, stdin io.Reader, out limitedWriter) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errw := &capWriter{max: maxStderr, quiet: true}
@@ -101,7 +109,7 @@ func (m *Manager) runInto(ctx context.Context, meta Meta, argv []string, env map
 		Interactive: stdin != nil, Stdin: stdin, Stdout: out, Stderr: errw,
 	})
 	switch {
-	case out.over:
+	case out.exceeded():
 		return fmt.Errorf("%w: more than %d MiB", ErrTooLarge, maxOutput>>20)
 	case err != nil:
 		return err

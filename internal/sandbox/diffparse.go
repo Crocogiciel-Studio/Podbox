@@ -29,7 +29,16 @@ type FileChange struct {
 	// BinaryAttr: git attributes mark the file binary but its content is text;
 	// it is shown as text.
 	BinaryAttr bool `json:"binary_attr"`
-	Untracked  bool `json:"untracked"`
+	// BinaryHidden: the file is binary and its content is not in this output
+	// (the default, and --stat); an export should ask the human first.
+	BinaryHidden bool `json:"binary_hidden"`
+	// TooLarge: the file's patch is past the per-file cap and was left out.
+	TooLarge  bool `json:"too_large"`
+	Untracked bool `json:"untracked"`
+	// Conversions lists what attributes make git do to this file before it
+	// stores it (filter=<name>, ident, working-tree-encoding=<enc>): the diff
+	// shows the raw bytes, so a commit by the agent's own git may differ.
+	Conversions []string `json:"conversions,omitempty"`
 	// Gitlink marks a nested repository or submodule (mode 160000): only its
 	// commit is compared, not its files.
 	Gitlink bool `json:"gitlink"`
@@ -119,53 +128,12 @@ func realID(id string) string {
 	return id
 }
 
-// splitSections cuts a patch at the "diff --git " header of each file; only a
-// header starts a line that way, since a content line begins with ' ', '+',
-// '-' or '\'.
-func splitSections(p []byte) [][]byte {
-	var starts []int
-	if bytes.HasPrefix(p, []byte("diff --git ")) {
-		starts = append(starts, 0)
-	}
-	for off := 0; ; {
-		i := bytes.Index(p[off:], []byte("\ndiff --git "))
-		if i < 0 {
-			break
-		}
-		starts = append(starts, off+i+1)
-		off += i + 1
-	}
-	out := make([][]byte, 0, len(starts))
-	for k, s := range starts {
-		end := len(p)
-		if k+1 < len(starts) {
-			end = starts[k+1]
-		}
-		out = append(out, p[s:end])
-	}
-	return out
-}
-
-// binaryStub keeps the header lines of a section and says the content is not
-// shown.
-func binaryStub(sec []byte) []byte {
-	var b bytes.Buffer
-	for _, line := range bytes.SplitAfter(sec, []byte("\n")) {
-		if bytes.HasPrefix(line, []byte("--- ")) || bytes.HasPrefix(line, []byte("@@ ")) {
-			break
-		}
-		b.Write(line)
-	}
-	b.WriteString("Binary file: contains NUL bytes, content not shown\n")
-	return b.Bytes()
-}
-
 // buildChanges joins what git said about the changed files. counts come from
-// the --text diff, binary from the content of each file's patch section (nil
-// sections: not seen, the verdict of gitBinary stands), and gitBinary is what
+// the --text diff, binary from the content of each file's patch section (a
+// file with no section keeps the verdict of gitBinary), and gitBinary is what
 // git itself, attributes included, calls binary. A list and counts that do
 // not match are an error, never a zero.
-func buildChanges(raws []rawEntry, nums []numEntry, sections [][]byte, gitBinary, untracked map[string]bool) ([]FileChange, error) {
+func buildChanges(raws []rawEntry, nums []numEntry, sections []patchSection, gitBinary, untracked map[string]bool) ([]FileChange, error) {
 	if len(nums) != len(raws) {
 		return nil, fmt.Errorf("git listed %d files but counted %d", len(raws), len(nums))
 	}
@@ -196,8 +164,8 @@ func buildChanges(raws []rawEntry, nums []numEntry, sections [][]byte, gitBinary
 			f.OldPath, f.OldPathB64 = termsafe.CleanName(r.oldPath), base64.StdEncoding.EncodeToString([]byte(r.oldPath))
 		}
 		gb := gitBinary[r.path]
-		if k < len(sections) && bytes.Contains(sections[k], []byte("\n@@ ")) { // a rename or a mode change has no content to look at
-			f.Binary = bytes.IndexByte(sections[k], 0) >= 0
+		if k < len(sections) && bytes.Contains(sections[k].data, []byte("\n@@ ")) { // a rename or a mode change has no content to look at
+			f.Binary = sections[k].nul
 			f.BinaryAttr = gb && !f.Binary
 		} else {
 			f.Binary = gb

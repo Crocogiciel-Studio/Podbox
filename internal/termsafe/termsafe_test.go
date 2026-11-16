@@ -34,6 +34,7 @@ func TestClean(t *testing.T) {
 		{"soft hyphen and invisible operators", "a­b⁪c⁣d", "a<U+00AD>b<U+206A>c<U+2063>d"},
 		{"variation selectors", "a️b\U000e0100c", "a<U+FE0F>b<U+E0100>c"},
 		{"hangul fillers, braille blank, object replacement", "aᅟbᅠcㅤdﾠe⠀f￼g", "a<U+115F>b<U+1160>c<U+3164>d<U+FFA0>e<U+2800>f<U+FFFC>g"},
+		{"look-alike spaces", "a\u00a0b\u2007c\u202fd\u205fe\u3000f\u2003g h", "a<U+00A0>b<U+2007>c<U+202F>d<U+205F>e<U+3000>f<U+2003>g h"},
 		{"khmer vowels", "a឴b឵c", "a<U+17B4>b<U+17B5>c"},
 		{"private use", "ab\U000f0000c", "a<U+E000>b<U+F0000>c"},
 		{"noncharacters", "a﷐b￿c\U0001fffed", "a<U+FDD0>b<U+FFFF>c<U+1FFFE>d"},

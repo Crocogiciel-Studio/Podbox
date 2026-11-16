@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,15 @@ const maxIgnoredList = 1 << 20
 
 var validBase = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
+// DiffOptions are the choices of Diff.
+type DiffOptions struct {
+	// Patch includes the patch (without it, only the file list).
+	Patch bool
+	// ShowBinary prints the content of files that hold NUL bytes, which is
+	// otherwise summarised; it needs Patch.
+	ShowBinary bool
+}
+
 // DiffResult is what the agent changed in its clone since the base commit.
 // Every string in it has been through termsafe; Patch is nil without the patch.
 type DiffResult struct {
@@ -36,6 +46,10 @@ type DiffResult struct {
 	// that are not in Files; IgnoredCapped says the count stopped at a limit.
 	Ignored       int  `json:"ignored"`
 	IgnoredCapped bool `json:"ignored_capped,omitempty"`
+	// Filters names the git filters the agent configured or its attributes
+	// use. They are never run by the diff, which shows the raw bytes, but a
+	// commit by the agent's own git would pass the files through them.
+	Filters []string `json:"filters"`
 	NameNotes
 }
 
@@ -55,12 +69,15 @@ func gitArgs(project string, limit time.Duration, sub ...string) []string {
 // an export would bring): commits, uncommitted changes, every file the agent's
 // index or HEAD tracks (even one a .gitignore lists), and untracked files.
 // Git runs in the agent container on a temporary index, so the agent's index,
-// config and objects are not written. The patch is left out unless withPatch.
+// config and objects are not written.
 //
-// Attributes never decide what is readable: the diff is made with --text, and
-// a file is binary when its content holds a NUL byte. A file git's attributes
-// call binary but whose content is text is shown as text (BinaryAttr).
-func (m *Manager) Diff(ctx context.Context, name string, withPatch bool) (DiffResult, error) {
+// The diff shows the raw bytes of the worktree: every filter the agent's
+// configuration defines is replaced by /bin/cat, so a clean filter cannot show
+// a reviewer other bytes than the file holds. Attributes never decide what is
+// readable either: the diff is made with --text, and a file is binary when its
+// content holds a NUL byte. A file git's attributes call binary but whose
+// content is text is shown as text (BinaryAttr).
+func (m *Manager) Diff(ctx context.Context, name string, opt DiffOptions) (DiffResult, error) {
 	meta, err := m.cloneMeta(ctx, name)
 	if err != nil {
 		return DiffResult{}, err
@@ -82,19 +99,15 @@ func (m *Manager) Diff(ctx context.Context, name string, withPatch bool) (DiffRe
 		"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0",
 		"GIT_NO_REPLACE_OBJECTS": "1", "GIT_ATTR_NOSYSTEM": "1",
 	}
-	temp := map[string]string{"GIT_INDEX_FILE": idx}
-	for k, v := range agent {
-		temp[k] = v
-	}
 	project := WorkspaceTarget(m.GOOS, meta.Workspace)
 	fail := func(sub string, err error) error {
 		var ee *ExecError
 		if errors.As(err, &ee) && (ee.Code == 124 || ee.Code == 137) {
-			return fmt.Errorf("%w after %ds; the sandbox may contain a hostile filter or hook", ErrTimeout, int(limit.Seconds()))
+			return fmt.Errorf("%w after %ds; the sandbox may contain a hostile program", ErrTimeout, int(limit.Seconds()))
 		}
 		return fmt.Errorf("git %s: %w", sub, err)
 	}
-	gitInto := func(env map[string]string, stdin []byte, out *capWriter, sub ...string) error {
+	gitInto := func(env map[string]string, stdin []byte, out limitedWriter, sub ...string) error {
 		var in io.Reader
 		if stdin != nil {
 			in = bytes.NewReader(stdin)
@@ -111,6 +124,27 @@ func (m *Manager) Diff(ctx context.Context, name string, withPatch bool) (DiffRe
 		}
 		return out.buf.Bytes(), nil
 	}
+	merge := func(maps ...map[string]string) map[string]string {
+		out := map[string]string{}
+		for _, m := range maps {
+			for k, v := range m {
+				out[k] = v
+			}
+		}
+		return out
+	}
+
+	// Every filter the agent defined becomes cat before any git call reads the worktree.
+	names, err := m.configuredFilters(git, agent)
+	if err != nil {
+		return DiffResult{}, err
+	}
+	over, err := filterOverrides(names)
+	if err != nil {
+		return DiffResult{}, err
+	}
+	agent = merge(agent, over)
+	temp := merge(agent, map[string]string{"GIT_INDEX_FILE": idx})
 
 	// The temporary index starts as the base tree...
 	if _, err := git(temp, "read-tree", meta.Base); err != nil {
@@ -122,12 +156,8 @@ func (m *Manager) Diff(ctx context.Context, name string, withPatch bool) (DiffRe
 		return DiffResult{}, err
 	}
 	if len(force) > 0 {
-		env := map[string]string{"GIT_LITERAL_PATHSPECS": "1"}
-		for k, v := range temp {
-			env[k] = v
-		}
 		stdin := []byte(strings.Join(force, "\x00") + "\x00")
-		if err := gitInto(env, stdin, &capWriter{max: maxStderr, quiet: true}, "add", "-f", "-N", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
+		if err := gitInto(merge(temp, map[string]string{"GIT_LITERAL_PATHSPECS": "1"}), stdin, &capWriter{max: maxStderr, quiet: true}, "add", "-f", "-N", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
 			return DiffResult{}, err
 		}
 	}
@@ -166,24 +196,31 @@ func (m *Manager) Diff(ctx context.Context, name string, withPatch bool) (DiffRe
 			gitBinary[e.path] = true
 		}
 	}
-	// The patch is read even for --stat, to look at the content of each file;
-	// there it is truncated at the cap rather than refused.
-	patchOut := &capWriter{max: maxOutput, quiet: !withPatch}
-	if err := gitInto(temp, nil, patchOut, append(diff, "--text", meta.Base, "--")...); err != nil {
+	// The patch is read even for --stat, to look at the content of each file,
+	// but only as far as the sections need.
+	keep := statKeep
+	if opt.Patch {
+		keep = maxFilePatch
+	}
+	sw := newSectionWriter(keep, maxOutput)
+	if err := gitInto(temp, nil, sw, append(diff, "--text", meta.Base, "--")...); err != nil {
 		return DiffResult{}, err
 	}
-	sections := splitSections(patchOut.buf.Bytes())
-	if withPatch && len(sections) != len(raws) {
-		return DiffResult{}, fmt.Errorf("git listed %d files but its patch has %d", len(raws), len(sections))
+	if err := sw.finish(); err != nil {
+		return DiffResult{}, fmt.Errorf("%w: more than %d MiB", err, maxOutput>>20)
 	}
-	if patchOut.cut && len(sections) > 0 {
-		sections = sections[:len(sections)-1] // the last one is cut
+	if len(sw.secs) != len(raws) {
+		return DiffResult{}, fmt.Errorf("git listed %d files but its patch has %d", len(raws), len(sw.secs))
 	}
-	files, err := buildChanges(raws, nums, sections, gitBinary, set(splitNUL(others)))
+	files, err := buildChanges(raws, nums, sw.secs, gitBinary, set(splitNUL(others)))
 	if err != nil {
 		return DiffResult{}, err
 	}
-	res := DiffResult{Schema: DiffSchema, Name: name, Base: meta.Base, Files: files, NameNotes: nameNotes(raws)}
+	filters, err := m.conversions(gitInto, temp, raws, files, names)
+	if err != nil {
+		return DiffResult{}, err
+	}
+	res := DiffResult{Schema: DiffSchema, Name: name, Base: meta.Base, Files: files, Filters: filters, NameNotes: nameNotes(raws)}
 
 	ign := &capWriter{max: maxIgnoredList, quiet: true}
 	if err := gitInto(temp, nil, ign, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"); err != nil {
@@ -195,18 +232,138 @@ func (m *Manager) Diff(ctx context.Context, name string, withPatch bool) (DiffRe
 	}
 	res.Ignored, res.IgnoredCapped = len(list), ign.cut
 
-	if withPatch {
+	for k := range res.Files {
+		f := &res.Files[k]
+		f.TooLarge = !f.Binary && sw.secs[k].size > int64(len(sw.secs[k].data)) && opt.Patch
+		f.BinaryHidden = f.Binary && !(opt.Patch && opt.ShowBinary)
+	}
+	if opt.Patch {
 		var patch bytes.Buffer
-		for k, sec := range sections {
-			if files[k].Binary {
-				sec = binaryStub(sec)
+		for k, sec := range sw.secs {
+			switch f := res.Files[k]; {
+			case f.Binary && opt.ShowBinary:
+				patch.Write(shownBinary(sec))
+			case f.Binary:
+				patch.Write(hiddenBinary(sec))
+			case f.TooLarge:
+				patch.Write(tooLarge(sec))
+			default:
+				patch.Write(sec.data)
 			}
-			patch.Write(sec)
 		}
 		p := string(termsafe.Clean(patch.Bytes()))
 		res.Patch = &p
 	}
 	return res, nil
+}
+
+// configuredFilters lists the filter names the agent's configuration defines,
+// whatever file or include defines them.
+func (m *Manager) configuredFilters(git func(map[string]string, ...string) ([]byte, error), env map[string]string) ([]string, error) {
+	out, err := git(env, "config", "--null", "--name-only", "--get-regexp", `^filter\..*\.(clean|smudge|process|required)$`)
+	var ee *ExecError
+	if errors.As(err, &ee) && ee.Code == 1 { // no match
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, key := range splitNUL(out) {
+		rest := strings.TrimPrefix(key, "filter.")
+		if i := strings.LastIndexByte(rest, '.'); i > 0 && !seen[rest[:i]] {
+			seen[rest[:i]] = true
+			names = append(names, rest[:i])
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// maxFilters bounds the filters overridden through the environment.
+const maxFilters = 100
+
+// filterOverrides turns every named filter into cat, as environment config
+// (GIT_CONFIG_KEY_n, which has no "=" to confuse a name). An empty process
+// and required=false are needed: git otherwise starts the process filter or
+// fails when a required filter is unset.
+func filterOverrides(names []string) (map[string]string, error) {
+	if len(names) > maxFilters {
+		return nil, fmt.Errorf("the clone defines %d git filters; refusing to diff it", len(names))
+	}
+	env := map[string]string{}
+	n := 0
+	for _, name := range names {
+		for _, kv := range [][2]string{{"clean", "/bin/cat"}, {"smudge", "/bin/cat"}, {"process", ""}, {"required", "false"}} {
+			env[fmt.Sprintf("GIT_CONFIG_KEY_%d", n)] = "filter." + name + "." + kv[0]
+			env[fmt.Sprintf("GIT_CONFIG_VALUE_%d", n)] = kv[1]
+			n++
+		}
+	}
+	if n > 0 {
+		env["GIT_CONFIG_COUNT"] = strconv.Itoa(n)
+	}
+	return env, nil
+}
+
+// conversions records, per changed file, the attributes that make git convert
+// it on the way in, and returns the filter names to flag: the configured ones
+// and those the attributes name.
+func (m *Manager) conversions(gitInto func(map[string]string, []byte, limitedWriter, ...string) error, env map[string]string, raws []rawEntry, files []FileChange, configured []string) ([]string, error) {
+	seen := map[string]bool{}
+	var filters []string
+	add := func(n string) {
+		n = termsafe.CleanName(n)
+		if !seen[n] {
+			seen[n] = true
+			filters = append(filters, n)
+		}
+	}
+	for _, n := range configured {
+		add(n)
+	}
+	if len(raws) > 0 {
+		var in strings.Builder
+		for _, r := range raws {
+			in.WriteString(r.path + "\x00")
+		}
+		out := &capWriter{max: maxOutput}
+		if err := gitInto(env, []byte(in.String()), out, "check-attr", "-z", "--stdin", "filter", "ident", "working-tree-encoding"); err != nil {
+			return nil, err
+		}
+		toks := splitNUL(out.buf.Bytes())
+		at := map[string]int{}
+		for k, r := range raws {
+			at[r.path] = k
+		}
+		for i := 0; i+2 < len(toks); i += 3 {
+			path, attr, val := toks[i], toks[i+1], toks[i+2]
+			k, ok := at[path]
+			if !ok || val == "unspecified" || val == "unset" {
+				continue
+			}
+			var c string
+			switch attr {
+			case "filter":
+				c = "filter=" + val
+				add(val)
+			case "ident":
+				if val != "set" {
+					continue
+				}
+				c = "ident"
+			default:
+				c = attr + "=" + val
+			}
+			files[k].Conversions = append(files[k].Conversions, termsafe.CleanName(c))
+		}
+	}
+	sort.Strings(filters)
+	if filters == nil {
+		filters = []string{}
+	}
+	return filters, nil
 }
 
 // trackedOutsideBase lists the paths the agent's index or HEAD track that the
@@ -241,17 +398,23 @@ func (m *Manager) trackedOutsideBase(git func(map[string]string, ...string) ([]b
 			headOnly = append(headOnly, p)
 		}
 	}
-	if len(headOnly) > 0 { // in HEAD but dropped from the index: keep those still on disk
-		onDisk, err := git(agent, "ls-files", "-z", "--others")
+	// In HEAD but dropped from the index: keep those still on disk. Ask about
+	// those paths only, so a huge untracked tree cannot make this fail.
+	literal := map[string]string{"GIT_LITERAL_PATHSPECS": "1"}
+	for k, v := range agent {
+		literal[k] = v
+	}
+	for len(headOnly) > 0 {
+		chunk := headOnly
+		if len(chunk) > 200 {
+			chunk = chunk[:200]
+		}
+		headOnly = headOnly[len(chunk):]
+		onDisk, err := git(literal, append([]string{"ls-files", "-z", "--others", "--"}, chunk...)...)
 		if err != nil {
 			return nil, err
 		}
-		here := set(splitNUL(onDisk))
-		for _, p := range headOnly {
-			if here[p] {
-				force = append(force, p)
-			}
-		}
+		force = append(force, splitNUL(onDisk)...)
 	}
 	return force, nil
 }

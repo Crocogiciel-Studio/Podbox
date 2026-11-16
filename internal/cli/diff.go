@@ -16,9 +16,9 @@ import (
 )
 
 func (a *app) diffCmd() *cobra.Command {
-	var stat bool
+	var stat, showBinary bool
 	cmd := &cobra.Command{
-		Use:   "diff <sandbox> [--stat]",
+		Use:   "diff <sandbox> [--stat | --show-binary]",
 		Short: "Show what the agent changed in a clone sandbox since its base commit",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -29,7 +29,7 @@ func (a *app) diffCmd() *cobra.Command {
 			if v, err := strconv.Atoi(os.Getenv("PODBOX_DIFF_TIMEOUT")); err == nil && v > 0 { // test knob
 				m.GitTimeout = time.Duration(v) * time.Second
 			}
-			res, err := m.Diff(cmd.Context(), args[0], !stat)
+			res, err := m.Diff(cmd.Context(), args[0], sandbox.DiffOptions{Patch: !stat, ShowBinary: showBinary})
 			if errors.Is(err, sandbox.ErrTooLarge) {
 				err = fmt.Errorf("%w (nothing printed; list the files only with: podbox diff %s --stat)", err, args[0])
 			}
@@ -40,6 +40,8 @@ func (a *app) diffCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&stat, "stat", false, "list the changed files only, no patch")
+	cmd.Flags().BoolVar(&showBinary, "show-binary", false, "print the content of files that hold NUL bytes (bounded per file), which is otherwise summarised")
+	cmd.MarkFlagsMutuallyExclusive("stat", "show-binary")
 	return cmd
 }
 
@@ -55,8 +57,16 @@ func fileNote(f sandbox.FileChange) string {
 	if f.Exec {
 		n = append(n, "executable")
 	}
-	if f.Binary {
-		n = append(n, "binary: contains NUL bytes, not shown")
+	if f.Binary && f.BinaryHidden {
+		n = append(n, "binary: contains NUL bytes, not shown; see --show-binary")
+	} else if f.Binary {
+		n = append(n, "binary: contains NUL bytes")
+	}
+	if f.TooLarge {
+		n = append(n, "too large: patch not shown")
+	}
+	if len(f.Conversions) > 0 {
+		n = append(n, "conversion: "+strings.Join(f.Conversions, ", "))
 	}
 	if f.BinaryAttr {
 		n = append(n, "git attributes mark it binary; shown as text")
@@ -92,6 +102,13 @@ func writeDiff(w io.Writer, res sandbox.DiffResult) {
 		}
 		tw.Flush()
 		fmt.Fprintf(w, "%d file(s) changed, +%d -%d since %s\n", len(res.Files), added, deleted, short(res.Base))
+	}
+	conv := len(res.Filters) > 0
+	for _, f := range res.Files {
+		conv = conv || len(f.Conversions) > 0
+	}
+	if conv {
+		fmt.Fprintf(w, "WARNING: git filters or conversions are in play (filters: %s). The bytes below are the raw bytes of each file; what the agent's own git would commit may differ.\n", strings.Join(res.Filters, ", "))
 	}
 	if res.Ignored > 0 {
 		more := ""
