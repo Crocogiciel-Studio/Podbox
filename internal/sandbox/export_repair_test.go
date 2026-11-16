@@ -214,3 +214,67 @@ func TestBigFileIsNotInflatedByTheReview(t *testing.T) {
 		t.Errorf("a 70 MiB file is not flagged as hidden: %+v", res.Warnings)
 	}
 }
+
+// The final name never holds a partial file, a refused target leaves no debris.
+func TestPatchIsLinkedIntoPlaceOnlyWhenWhole(t *testing.T) {
+	f := newFixture(t)
+	f.commit("a.txt", "one\ntwo\n")
+	dir := t.TempDir()
+	out := filepath.Join(dir, "p.patch")
+	var existedWhileStreaming bool
+	f.rt.override = func(argv []string) ([]byte, bool) {
+		for _, a := range argv {
+			if a == "--binary" {
+				_, err := os.Lstat(out)
+				existedWhileStreaming = err == nil
+			}
+		}
+		return nil, false
+	}
+	if _, err := f.export(ExportOptions{As: AsPatch, Out: out}); err != nil {
+		t.Fatal(err)
+	}
+	if existedWhileStreaming {
+		t.Error("the final name existed while the patch was being written")
+	}
+	debris := func() []string {
+		m, _ := filepath.Glob(filepath.Join(dir, ".*"))
+		return m
+	}
+	if d := debris(); len(d) != 0 {
+		t.Errorf("temporary file left: %v", d)
+	}
+	if fi, err := os.Stat(out); err != nil || fi.Mode().Perm()&0o044 == 0 || fi.Mode().Perm()&0o200 == 0 {
+		t.Errorf("mode %v %v", fi, err)
+	}
+	f.rt.override = nil
+	before, _ := os.ReadFile(out)
+	if _, err := f.export(ExportOptions{As: AsPatch, Out: out}); !errors.Is(err, ErrFileExists) {
+		t.Errorf("existing file: %v", err)
+	}
+	link := filepath.Join(dir, "l.patch")
+	os.Symlink(filepath.Join(dir, "elsewhere"), link)
+	if _, err := f.export(ExportOptions{As: AsPatch, Out: link}); !errors.Is(err, ErrFileExists) {
+		t.Errorf("symlink: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "elsewhere")); err == nil {
+		t.Error("a symlink target was written")
+	}
+	if after, _ := os.ReadFile(out); string(after) != string(before) {
+		t.Error("the file changed")
+	}
+	if d := debris(); len(d) != 0 {
+		t.Errorf("temporary file left after a refusal: %v", d)
+	}
+	// a failure while writing leaves nothing either
+	f.m.MaxExport = 100
+	if _, err := f.export(ExportOptions{As: AsPatch, Out: filepath.Join(dir, "big.patch")}); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("cap: %v", err)
+	}
+	if m, _ := filepath.Glob(filepath.Join(dir, "*big*")); len(m) != 0 {
+		t.Errorf("debris after the cap: %v", m)
+	}
+	if d := debris(); len(d) != 0 {
+		t.Errorf("hidden debris after the cap: %v", d)
+	}
+}

@@ -157,6 +157,10 @@ func (h Host) BundleHeads(ctx context.Context, file string) ([]BundleHead, error
 	return heads, nil
 }
 
+// BigFile is core.bigFileThreshold for every host command that reads objects
+// of a bundle: past it git streams a blob instead of holding it in memory.
+const BigFile = "64m"
+
 // fsckConfig turns the object checks on. The fetch that matters runs in the
 // quarantine repository, which has no configuration of the host's.
 func fsckConfig() []string {
@@ -203,7 +207,7 @@ func (h Host) ImportBranch(ctx context.Context, file, ref, target string, check 
 		return "", err
 	}
 	const qref = "refs/podbox/tip"
-	if _, err := q.Output(ctx, append(fsckConfig(), "-c", "fetch.writeCommitGraph=false",
+	if _, err := q.Output(ctx, append(fsckConfig(), "-c", "fetch.writeCommitGraph=false", "-c", "core.bigFileThreshold="+BigFile,
 		"fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--no-auto-maintenance", "--no-auto-gc",
 		file, ref+":"+qref)...); err != nil {
 		return "", fmt.Errorf("%w: %w: %v", ErrBadBundle, ErrObjectCheck, err)
@@ -225,7 +229,7 @@ func (h Host) ImportBranch(ctx context.Context, file, ref, target string, check 
 	defer func() { // also on failure and on an interrupt: the fetch may have created it
 		_, _ = h.Output(context.WithoutCancel(ctx), "update-ref", "-d", tmp)
 	}()
-	if _, err := h.Output(ctx, append(fsckConfig(), "-c", "fetch.writeCommitGraph=false",
+	if _, err := h.Output(ctx, append(fsckConfig(), "-c", "fetch.writeCommitGraph=false", "-c", "core.bigFileThreshold="+BigFile,
 		"fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--no-auto-maintenance", "--no-auto-gc",
 		q.WS, qref+":"+tmp)...); err != nil {
 		return tip, fmt.Errorf("%w: %w: %v", ErrBadBundle, ErrObjectCheck, err)
