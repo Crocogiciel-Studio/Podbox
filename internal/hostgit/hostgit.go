@@ -117,9 +117,21 @@ func run(ctx context.Context, dir string, limit int, extra []string, stdin io.Re
 		if len(msg) > 2000 {
 			msg = msg[:2000]
 		}
-		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, msg)
+		return nil, fmt.Errorf("git %s: %w: %s", subcommand(args), err, msg)
 	}
 	return out.buf.Bytes(), nil
+}
+
+// subcommand is the first argument that is not a -c option and its value.
+func subcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-c" {
+			i++
+			continue
+		}
+		return args[i]
+	}
+	return args[0]
 }
 
 // Repo is what Inspect learns about a host project.
