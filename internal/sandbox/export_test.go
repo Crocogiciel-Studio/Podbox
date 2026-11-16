@@ -103,6 +103,16 @@ func TestAnalyzeWarnings(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("got %v want %v", got, want)
 	}
+	// the host may ignore case
+	folded := analyze([]rawEntry{r("100644", ".GitAttributes"), r("100644", "d/.GITMODULES"), r("100644", "Lefthook.yml"), r("100644", "x/.Pre-Commit-Config.yaml"),
+		r("100644", ".Podbox/policy.yaml"), r("100644", ".SandboxIgnore"), r("100644", ".HUSKY/x"), r("100644", "sub/.Husky/h")}, make([]patchSection, 8))
+	gotFolded := map[string]int{}
+	for _, w := range folded {
+		gotFolded[w.Kind] = w.Count
+	}
+	if fmt.Sprint(gotFolded) != fmt.Sprint(map[string]int{"attributes": 1, "submodule": 1, "hook-like": 4, "podbox-config": 2}) {
+		t.Errorf("case variants: %v", gotFolded)
+	}
 	// a path changed by several commits counts once
 	twice := analyze([]rawEntry{r("120000", "l"), r("120000", "l"), r("100644", "a"), r("100644", "a")}, make([]patchSection, 4))
 	if len(twice) != 1 || twice[0].Count != 1 {

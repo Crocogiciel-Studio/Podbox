@@ -3,7 +3,9 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -303,8 +305,9 @@ func analyze(raws []rawEntry, secs []patchSection) []ExportWarning {
 		}
 	}
 	for k, r := range raws {
-		p, b := r.path, path.Base(r.path)
+		p := r.path
 		lower := strings.ToLower(p)
+		b := path.Base(lower) // the host may ignore case: .GitAttributes is .gitattributes
 		switch {
 		case r.mode == "120000":
 			add("symlink", "a symlink can point outside the project; check its target before using the branch", p)
@@ -324,7 +327,7 @@ func analyze(raws []rawEntry, secs []patchSection) []ExportWarning {
 				break
 			}
 		}
-		if p == workspace.IgnoreFile || strings.HasPrefix(p, ".podbox/") {
+		if lower == workspace.IgnoreFile || strings.HasPrefix(lower, ".podbox/") {
 			add("podbox-config", "podbox's own configuration changes what the next sandbox masks and allows", p)
 		}
 		if k < len(secs) && secs[k].nul && r.mode != "160000" {
@@ -511,7 +514,7 @@ func hostRunner(ctx context.Context, h hostgit.Host) gitRunner {
 var rangeDiff = []string{"--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=none"}
 
 // bigFile is the size past which the review does not read a blob.
-const bigFile = "64m"
+const bigFile = hostgit.BigFile
 
 // maxReviewSections caps the memory the review keeps (the start of each file's patch).
 const maxReviewSections = 256 << 20
@@ -779,27 +782,39 @@ func (m *Manager) exportPatch(ctx context.Context, sess *gitSession, host hostgi
 	if err != nil {
 		return res, err
 	}
-	f, err := os.OpenFile(out, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if errors.Is(err, fs.ErrExist) {
-		return res, fmt.Errorf("%w: %s; choose another with --out", ErrFileExists, out)
+	// The patch is written and verified under a temporary name in the same
+	// directory, then linked to its final name: link fails if the name exists
+	// (nothing is overwritten, a symlink there is not followed), and the final
+	// name never holds a partial or unverified file, even if podbox is killed.
+	var rnd [6]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return res, err
 	}
+	tmp := filepath.Join(filepath.Dir(out), "."+filepath.Base(out)+".tmp-"+hex.EncodeToString(rnd[:]))
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return res, err
 	}
+	defer os.Remove(tmp) // after a successful link too: the final name is another link
 	w := &fileCap{f: f, max: m.exportCap()}
 	err = sess.into(sess.agent, nil, w, patchArgs(meta.Base, res.Head)...)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err == nil {
-		err = checkPatchFile(ctx, host, out, net)
+		err = checkPatchFile(ctx, host, tmp, net)
 	}
 	if err != nil {
-		_ = os.Remove(out) // only the file this call created: O_EXCL made it
 		if w.over {
 			return res, fmt.Errorf("%w: the patch is over %d MiB", ErrTooLarge, m.exportCap()>>20)
 		}
 		return res, err
+	}
+	if err := os.Link(tmp, out); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return res, fmt.Errorf("%w: %s; choose another with --out", ErrFileExists, out)
+		}
+		return res, fmt.Errorf("cannot create %s (the patch is written with a hard link, so the directory must allow them): %w", out, err)
 	}
 	res.File, res.Exported = out, true
 	return res, nil
