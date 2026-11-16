@@ -93,6 +93,7 @@ func TestCommandExitCodes(t *testing.T) {
 		{[]string{"run", "nosuchagent", t.TempDir()}, output.ExitUsage},
 		{[]string{"policy", "show", "nosuch"}, output.ExitNotFound},
 		{[]string{"diff"}, output.ExitUsage},
+		{[]string{"diff", "s", "--stat", "--show-binary"}, output.ExitUsage},
 		{[]string{"policy", "allow", "nosuch", "example.com"}, output.ExitNotFound},
 		{[]string{"policy", "allow", "s", "a*b"}, output.ExitUsage},
 		{[]string{"policy", "allow", "s", "example.com", "--scope", "nowhere"}, output.ExitUsage},

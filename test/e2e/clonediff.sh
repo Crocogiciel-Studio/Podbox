@@ -84,7 +84,7 @@ check "the patch holds the committed change" grep -q '^+committed$' "$OUT"
 check "the patch holds the uncommitted change" grep -q '^+uncommitted line$' "$OUT"
 check "the patch holds the untracked file" grep -q '^+untracked$' "$OUT"
 check "the patch holds the deletion" grep -q '^-to delete$' "$OUT"
-check "a binary file is summarised, its content not printed" grep -q '^Binary file: contains NUL bytes, content not shown' "$OUT"
+check "a binary file is summarised, its content not printed" grep -q '^Binary file by content (contains NUL bytes), .* use --show-binary to inspect it' "$OUT"
 check "no base85 binary patch is printed" test "$(grep -c '^GIT binary patch' "$OUT")" = 0
 check "a binary file is flagged in the summary" grep -Eq '^untracked +- +- +bin.dat .*contains NUL bytes' "$OUT"
 check "a file the agent committed although .gitignore lists it is in the diff" grep -Eq '^added +1 +0 +hidden.txt' "$OUT"
@@ -134,7 +134,7 @@ check "a text file under '* binary' and an info/attributes -diff is readable" gr
 check "an edited text file is readable too" grep -q '^+uncommitted line$' "$OUT"
 check "no base85 patch and no 'Binary files differ' for text" test "$(grep -c '^GIT binary patch\|^Binary files' "$OUT")" = 0
 check "the summary says attributes flagged it" grep -q 'code.py .*git attributes mark it binary; shown as text' "$OUT"
-check "a real binary stays summarised" grep -q '^Binary file: contains NUL bytes' "$OUT"
+check "a real binary stays summarised" grep -q '^Binary file by content (contains NUL bytes)' "$OUT"
 pb diff "$NAME" -o json >"$OUT"
 check "JSON: text file binary=false, binary_attr=true" test "$(json '.files[] | select(.path == "code.py") | [.binary, .binary_attr] | join(" ")')" = "false true"
 check "JSON: real binary binary=true" test "$(json '.files[] | select(.path == "bin.dat") | .binary')" = true
@@ -151,6 +151,38 @@ pb diff "$NAME" -o json >"$OUT"
 check "JSON counts them" test "$(json '[.case_collisions, .non_ascii] | join(" ")')" = "2 1"
 check "path_b64 of a non-ASCII name is lossless" test "$(json '.files[] | select(.non_ascii_x // (.path | test("caf"))) | .path_b64' | base64 -d | od -An -tx1 | tr -d ' \n')" = "636166c3a92e747874"
 sx "$NAME" 'rm -f Case.TXT case.txt caf*.txt'
+
+echo "== a filter cannot show other bytes than the file holds"
+sx "$NAME" 'git config filter.x.clean "echo harmless"; git config filter.x.required true; git config filter.x.process "sleep 600"; printf "evil.sh filter=x\n" > .gitattributes; printf "rm -rf /\n" > evil.sh'
+pb diff "$NAME" >"$OUT" 2>"$ERR"
+check "the patch holds the raw bytes of the file" grep -q '^+rm -rf /$' "$OUT"
+check "the filter's output is not in the diff" test "$(grep -c '^+harmless' "$OUT")" = 0
+check "the summary warns about filters" grep -q '^WARNING: git filters or conversions are in play (filters: x)' "$OUT"
+check "the file is marked with its conversion" grep -q 'evil.sh .*conversion: filter=x' "$OUT"
+pb diff "$NAME" -o json >"$OUT"
+check "JSON lists the filter and the file's conversion" test "$(json '[.filters[], (.files[] | select(.path == "evil.sh") | .conversions[])] | join(" ")')" = "x filter=x"
+sx "$NAME" 'rm -f .gitattributes evil.sh; git config --remove-section filter.x'
+pb diff "$NAME" -o json >"$OUT"
+check "no filter, no warning" test "$(json '.filters | length')" = 0
+
+echo "== a NUL byte cannot hide a file"
+sx "$NAME" 'printf "echo ok\n\000rm -rf ~\n" > nulscript.sh'
+pb diff "$NAME" >"$OUT"
+check "by default the script's content is not shown" test "$(grep -c 'rm -rf ~' "$OUT")" = 0
+check "the stub names the flag and the size" grep -Eq '^Binary file by content .*[0-9]+ bytes in the patch, starts with "echo ok.*use --show-binary' "$OUT"
+check "the summary says it is hidden" grep -q 'nulscript.sh .*see --show-binary' "$OUT"
+pb diff "$NAME" -o json >"$OUT"
+check "JSON: binary and binary_hidden" test "$(json '.files[] | select(.path == "nulscript.sh") | [.binary, .binary_hidden] | join(" ")')" = "true true"
+pb diff "$NAME" --show-binary >"$OUT"
+check "--show-binary prints the content" grep -q '^+<U+0000>rm -rf ~$' "$OUT"
+check "--show-binary output is printable" printable "$OUT"
+check "--show-binary still summarises nothing else away" grep -q '^+uncommitted line$' "$OUT"
+pb diff "$NAME" --show-binary -o json >"$OUT"
+check "JSON with --show-binary: not hidden" test "$(json '.files[] | select(.path == "nulscript.sh") | [.binary, .binary_hidden] | join(" ")')" = "true false"
+check "a real binary is shown only by request" test "$(json '.patch | contains("+<U+0000><U+0001><U+0002>binary")')" = true
+pb diff "$NAME" --show-binary --stat >/dev/null 2>&1
+check "--show-binary with --stat is a usage error" test $? -eq 2
+sx "$NAME" 'rm nulscript.sh'
 
 echo "== git replace cannot fake the base"
 PATHS=$(pb diff "$NAME" --stat -o json | jq -c '[.files[].path]')
@@ -172,15 +204,15 @@ sx "$NAME" 'mkdir -p .git/hooks; printf "#!/bin/sh\ntouch /tmp/hook-ran\nsleep 6
 pb diff "$NAME" --stat >"$OUT" 2>"$ERR"
 check "a post-index-change hook does not run and does not hang the diff" test $? -eq 0 && sx "$NAME" '! test -e /tmp/hook-ran'
 sx "$NAME" 'rm .git/hooks/post-index-change'
-sx "$NAME" 'printf "[filter \"slow\"]\n\tclean = sleep 600\n" >> .git/config; printf "a.txt filter=slow\nhang.txt filter=slow\n" > .gitattributes; echo x > hang.txt'
-PODBOX_DIFF_TIMEOUT=5 pb diff "$NAME" >"$OUT" 2>"$ERR"
-check "a hanging clean filter: exit 1" test $? -eq 1
-check "a hanging clean filter: nothing printed" test ! -s "$OUT"
-check "a hanging clean filter: the timeout is named" grep -q 'timed out after 5s' "$ERR"
-check "the hung filter does not outlive the diff" eventually 15 sx "$NAME" '! grep -l "sleep 6[0]0" /proc/[0-9]*/cmdline 2>/dev/null | grep -q .'
+sx "$NAME" 'printf "[filter \"slow\"]\n\tclean = touch /tmp/filter-ran; sleep 600\n\tprocess = touch /tmp/process-ran; sleep 600\n\trequired = true\n" >> .git/config; printf "a.txt filter=slow\nhang.txt filter=slow\n" > .gitattributes; echo x > hang.txt'
+PODBOX_DIFF_TIMEOUT=20 pb diff "$NAME" >"$OUT" 2>"$ERR"
+check "a hanging clean and process filter is never run: exit 0" test $? -eq 0
+check "no filter ran" sx "$NAME" '! ls /tmp/filter-ran /tmp/process-ran >/dev/null 2>&1'
+check "nothing hangs on in the sandbox" sx "$NAME" '! grep -l "sleep 6[0]0" /proc/[0-9]*/cmdline 2>/dev/null | grep -q .'
+check "the diff still shows the file" grep -q '^+x$' "$OUT"
 sx "$NAME" 'rm -f .gitattributes hang.txt; git config --remove-section filter.slow'
 pb diff "$NAME" --stat >"$OUT" 2>/dev/null
-check "the diff works again once the filter is gone" grep -q 'a.txt' "$OUT"
+check "the diff works after the filter is removed" grep -q 'a.txt' "$OUT"
 
 echo "== refusals"
 pb stop "$NAME" >/dev/null
@@ -198,15 +230,24 @@ pb rm "$SHARED" >/dev/null 2>&1
 pb diff e2e-cdnone >/dev/null 2>&1
 check "unknown sandbox: exit 4" test $? -eq 4
 
-echo "== a patch larger than the cap"
+echo "== a big file, and a patch past the cap"
 sx "$NAME" 'head -c 36000000 /dev/zero | tr "\000" "a" > big.txt'
 pb diff "$NAME" >"$OUT" 2>"$ERR"
-check "exit 1" test $? -eq 1
+check "one big file does not fail the diff" test $? -eq 0
+check "its patch is replaced by a stub saying how big" grep -q '^Too large: [0-9]* bytes in the patch, not shown' "$OUT"
+check "the other files are still in the patch" grep -q '^+uncommitted line$' "$OUT"
+check "the big file's text is not printed" test "$(grep -c '^+aaaa' "$OUT")" = 0
+pb diff "$NAME" -o json >"$OUT" 2>/dev/null
+check "JSON flags it too_large" test "$(json '.files[] | select(.path == "big.txt") | .too_large')" = true
+check "JSON flags no other file" test "$(json '[.files[] | select(.too_large)] | length')" = 1
+sx "$NAME" 'rm big.txt; i=0; while [ $i -lt 10 ]; do head -c 4500000 /dev/zero | tr "\000" "a" > big$i.txt; i=$((i+1)); done'
+pb diff "$NAME" >"$OUT" 2>"$ERR"
+check "past the overall cap: exit 1" test $? -eq 1
 check "nothing printed" test ! -s "$OUT"
 check "the message suggests --stat" grep -q -- '--stat' "$ERR"
 pb diff "$NAME" --stat >"$OUT" 2>/dev/null
-check "--stat still works" grep -q 'big.txt' "$OUT"
-sx "$NAME" 'rm big.txt'
+check "--stat still works" grep -q 'big0.txt' "$OUT"
+sx "$NAME" 'rm -f big*.txt'
 check "host repository still unchanged" test "$(hostprint)" = "$BEFORE"
 
 echo "== teardown"

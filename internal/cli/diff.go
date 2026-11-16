@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
 )
 
@@ -22,6 +23,9 @@ func (a *app) diffCmd() *cobra.Command {
 		Short: "Show what the agent changed in a clone sandbox since its base commit",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if stat && showBinary {
+				return output.Errorf(output.ExitUsage, "--show-binary prints a patch, --stat has none: use one of them")
+			}
 			m, err := a.manager(cmd.Context())
 			if err != nil {
 				return err
@@ -41,7 +45,6 @@ func (a *app) diffCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&stat, "stat", false, "list the changed files only, no patch")
 	cmd.Flags().BoolVar(&showBinary, "show-binary", false, "print the content of files that hold NUL bytes (bounded per file), which is otherwise summarised")
-	cmd.MarkFlagsMutuallyExclusive("stat", "show-binary")
 	return cmd
 }
 
