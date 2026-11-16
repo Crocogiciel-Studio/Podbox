@@ -63,6 +63,7 @@ podbox policy show claude-my-project
 | `exec <name> -- <cmd>...` | run a command in the workspace, exit with its code |
 | `attach <name>` | open a new agent session in a running sandbox |
 | `diff <name> [--stat \| --show-binary]` | what the agent changed in a running clone sandbox since its base commit: commits, uncommitted changes and untracked files, as a file summary, a total and a patch; `--stat` stops after the summary; `--show-binary` also prints the content of NUL-containing files; exit 2 for a shared sandbox or `--stat` with `--show-binary`, 4 for an unknown one, 1 when the sandbox is stopped, a git command times out (120 s) or the patch exceeds 32 MiB (use `--stat`) |
+| `export <name> --as branch\|patch [--branch-name N] [--out FILE] [--include-masked]` | bring the agent's commits since the base out of a running clone sandbox: `branch` creates a new host branch (default `podbox/<name>/<agent branch>`) from a bundle the host verifies, `patch` writes a patch series for `git apply` (default `<name>.patch` here); never overwrites a branch or a file, never checks out or merges; only committed work goes, the rest is reported as not exported; exit 2 for a shared sandbox or a bad flag combination, 4 for an unknown one, 1 when the sandbox is stopped, the branch or file exists, the commits touch a masked path, the history does not descend from the base, the host refuses the bundle or it is over 256 MiB |
 | `git-check <name> [--accept]` | compare `.git` with the fingerprint taken at creation, exit 6 on suspicious changes; `--accept` re-records it; says it does not apply (exit 0) to a clone sandbox |
 | `policy show\|allow\|deny\|reload <name> [host]` | inspect and change the allowlist from the host; `reload --forget-missing` also drops recorded masks found nowhere |
 | `policy log <name> [--denied] [--follow] [--since 10m]` | the proxy's decisions, with the fix command for each refusal; exit 4 for an unknown sandbox, 1 when it is not running |
@@ -111,7 +112,26 @@ podbox diff claude-project -o json
 - It is a point-in-time view of a live worktree, not a snapshot of what an export will bring: the agent can keep working while you read.
 - Each git command is stopped after 120 seconds (exit 1, "git timed out"), and the output is capped at 32 MiB; past it `diff` exits 1 with nothing printed and suggests `--stat`.
 
-`podbox export` comes next. Until then, read the clone at the path `create` printed.
+### Bringing the work back: `podbox export`
+
+The workflow is: run, `diff`, `export`, review on the host, merge yourself. Nothing is ever merged or checked out for you.
+
+```sh
+podbox export claude-project --as branch                          # new branch podbox/claude-project/<agent branch>
+podbox export claude-project --as branch --branch-name review/x -o json
+podbox export claude-project --as patch                           # ./claude-project.patch
+podbox export claude-project --as patch --out /tmp/work.patch
+git log main..podbox/claude-project/main                           # then review, check out, merge: your call
+```
+
+- Only committed work is exported. Uncommitted and untracked files stay in the clone and are reported as `not exported` (counts and names; a masked file always reads as changed in a clone, so masked paths are left out of that list). Nothing to export (no commit since the base) exits 0, creates nothing and says so.
+- `--as branch` fetches a bundle made by git inside the sandbox into a temporary ref of your repository, with object checks on (`transfer.fsckObjects`, `fetch.fsckObjects`), then creates the branch atomically; an existing branch is never overwritten (exit 1, `--branch-name` suggested), including the one you are on. Your working tree, index, configuration, hooks and other branches are not touched and no host hook runs. The agent's branch name is made safe (ASCII letters, digits, `.`, `_`, `-`, `/`, at most 100 bytes); `--branch-name` must be a valid branch name (exit 2 otherwise). A detached HEAD needs `--branch-name`.
+- `--as patch` writes `git format-patch --stdout --binary --full-index` of the commits to a new file, created with `O_EXCL` (never overwritten, a symlink at the path is not followed), and prints a cleaned summary. The patch itself is the agent's text and is not cleaned, because `git apply` needs the exact bytes. It applies on a checkout of the base commit.
+- Masked paths: the agent sees a masked tracked file empty or absent and can commit it that way, so an export that touches a path masked in this sandbox is refused (exit 1, the paths named) unless `--include-masked` is passed. JSON: `masked_touched` and `masked_touched_b64`.
+- Warnings, in the text (`WARNING`) and in the JSON (`warnings`: `kind`, `detail`, `count`, `examples`): the commits introduce symlinks, gitlinks or `.gitmodules` changes, `.gitattributes`, hook manager files (`.husky`, `lefthook`, `.pre-commit-config.yaml`), a `.git` path component, a change to `.sandboxignore` or `.podbox/`, files with NUL bytes (which `diff` hides by default), paths that differ only by case or have non-ASCII characters. Review with `podbox diff` and `git diff` before checking anything out.
+- The base commit must exist in your repository (otherwise exit 1: it was garbage collected or the history rewritten) and the exported tip must descend from it; a rewritten or unrelated history is refused with an explanation.
+- JSON: `schema` (1), `name`, `as`, `exported`, `branch` or `file`, `agent_branch`, `branch_sanitized`, `base`, `head`, `commits`, `commit_list` (up to 20, cleaned), `files_changed`, `host_verified`, `not_exported` (`uncommitted`, `untracked`, `uncommitted_files`, `untracked_files`), `masked_touched`, `masked_touched_b64`, `warnings`. `host_verified` is true for a branch (the file list and warnings come from objects your git verified) and false for a patch, which only has its base checked on the host.
+- Limits: the bundle or patch is capped at 256 MiB (exit 1), each git command at 120 s; a refused import can leave unreachable objects in your repository, which `git gc` removes; submodule and LFS content is not exported; the agent can keep working while you export (a moved HEAD is refused, try again).
 
 ## Configuration
 
@@ -142,7 +162,7 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 | 6 | `git-check` found suspicious `.git` changes |
 | 7 | masks cannot be verified: the workspace or one of its directories is unreadable (`create`, `start`, `policy reload`), a recorded masked path is missing or now a symbolic link (`start`; restore it or `policy reload --forget-missing`), or the mask resolution is internally inconsistent; see [workspace masking](docs/security-model.md#workspace-masking) |
 
-`diff` uses no new code: usage (2) for a shared sandbox, not found (4), generic (1) for a stopped sandbox or an oversized patch. `exec`, `attach` and `run` exit with the inner command's code. A suspicious `.git` change only prints a warning on these and on `start`, `stop`, `rm` and `ls` (and adds `git_integrity` to their JSON); see [git directory integrity](docs/security-model.md#git-directory-integrity). With `--output json`, errors are printed on stdout as `{"error":{"code":<exit code>,"kind":"...","message":"..."}}`.
+`diff` and `export` use no new code: usage (2) for a shared sandbox or invalid options, not found (4), generic (1) for a stopped sandbox, an oversized patch or bundle, an existing branch or file, masked paths or a refused history. `exec`, `attach` and `run` exit with the inner command's code. A suspicious `.git` change only prints a warning on these and on `start`, `stop`, `rm` and `ls` (and adds `git_integrity` to their JSON); see [git directory integrity](docs/security-model.md#git-directory-integrity). With `--output json`, errors are printed on stdout as `{"error":{"code":<exit code>,"kind":"...","message":"..."}}`.
 
 ## Known limits
 
