@@ -62,6 +62,8 @@ func TestExitCodes(t *testing.T) {
 		{"not the top level", fmt.Errorf("%w: /x/y", hostgit.ErrNotTopLevel), output.ExitUsage},
 		{"empty repository", fmt.Errorf("%w: /x", hostgit.ErrEmptyRepo), output.ExitUsage},
 		{"clone exists", fmt.Errorf("%w for s", sandbox.ErrCloneExists), output.ExitGeneric},
+		{"not a clone sandbox", fmt.Errorf("%w: s", sandbox.ErrNotClone), output.ExitUsage},
+		{"output too large", fmt.Errorf("%w: s", sandbox.ErrTooLarge), output.ExitGeneric},
 		{"mode mismatch", fmt.Errorf("%w: s", sandbox.ErrModeMismatch), output.ExitGeneric},
 	}
 	for _, c := range cases {
@@ -89,6 +91,7 @@ func TestCommandExitCodes(t *testing.T) {
 	}{
 		{[]string{"run", "nosuchagent", t.TempDir()}, output.ExitUsage},
 		{[]string{"policy", "show", "nosuch"}, output.ExitNotFound},
+		{[]string{"diff"}, output.ExitUsage},
 		{[]string{"policy", "allow", "nosuch", "example.com"}, output.ExitNotFound},
 		{[]string{"policy", "allow", "s", "a*b"}, output.ExitUsage},
 		{[]string{"policy", "allow", "s", "example.com", "--scope", "nowhere"}, output.ExitUsage},
