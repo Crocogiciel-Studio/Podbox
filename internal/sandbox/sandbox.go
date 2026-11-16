@@ -515,17 +515,22 @@ type IO struct {
 	TTY      bool
 }
 
+// requireRunning fails with ErrNotRunning unless the container of sandbox name is up.
+func (m *Manager) requireRunning(ctx context.Context, container, name string) error {
+	c, err := m.RT.ContainerInspect(ctx, container)
+	if errors.Is(err, runtime.ErrNotFound) || err == nil && !c.Running() {
+		return fmt.Errorf("%w: %s (run podbox start %s)", ErrNotRunning, name, name)
+	}
+	return err
+}
+
 // Exec runs cmd in the agent container at the workspace path.
 func (m *Manager) Exec(ctx context.Context, name string, cmd []string, tio IO) (int, error) {
 	meta, err := m.Store.Load(name)
 	if err != nil {
 		return -1, err
 	}
-	c, err := m.RT.ContainerInspect(ctx, agentContainer(name))
-	if errors.Is(err, runtime.ErrNotFound) || err == nil && !c.Running() {
-		return -1, fmt.Errorf("%w: %s (run podbox start %s)", ErrNotRunning, name, name)
-	}
-	if err != nil {
+	if err := m.requireRunning(ctx, agentContainer(name), name); err != nil {
 		return -1, err
 	}
 	return m.RT.Exec(ctx, agentContainer(name), runtime.ExecSpec{
@@ -539,11 +544,7 @@ func (m *Manager) ProxyLog(ctx context.Context, name string, spec runtime.LogsSp
 	if _, err := m.status(ctx, name); err != nil {
 		return err
 	}
-	c, err := m.RT.ContainerInspect(ctx, proxyContainer(name))
-	if errors.Is(err, runtime.ErrNotFound) || err == nil && !c.Running() {
-		return fmt.Errorf("%w: %s (run podbox start %s)", ErrNotRunning, name, name)
-	}
-	if err != nil {
+	if err := m.requireRunning(ctx, proxyContainer(name), name); err != nil {
 		return err
 	}
 	return m.RT.Logs(ctx, proxyContainer(name), spec)

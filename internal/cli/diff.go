@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -13,17 +14,6 @@ import (
 
 	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
 )
-
-// diffResult is the JSON of podbox diff; Patch is absent with --stat.
-type diffResult struct {
-	Name  string               `json:"name"`
-	Base  string               `json:"base"`
-	Files []sandbox.FileChange `json:"files"`
-	Patch *string              `json:"patch,omitempty"`
-	// Ignored counts ignored paths not listed in Files.
-	Ignored       int  `json:"ignored"`
-	IgnoredCapped bool `json:"ignored_capped,omitempty"`
-}
 
 func (a *app) diffCmd() *cobra.Command {
 	var stat bool
@@ -39,16 +29,12 @@ func (a *app) diffCmd() *cobra.Command {
 			if v, err := strconv.Atoi(os.Getenv("PODBOX_DIFF_TIMEOUT")); err == nil && v > 0 { // test knob
 				m.GitTimeout = time.Duration(v) * time.Second
 			}
-			d, err := m.Diff(cmd.Context(), args[0], !stat)
+			res, err := m.Diff(cmd.Context(), args[0], !stat)
 			if errors.Is(err, sandbox.ErrTooLarge) {
 				err = fmt.Errorf("%w (nothing printed; list the files only with: podbox diff %s --stat)", err, args[0])
 			}
 			if err != nil {
 				return err
-			}
-			res := diffResult{Name: args[0], Base: d.Base, Files: d.Files, Ignored: d.Ignored, IgnoredCapped: d.IgnoredCapped}
-			if !stat {
-				res.Patch = &d.Patch
 			}
 			return a.out.Print(res, func(w io.Writer) { writeDiff(w, res) })
 		},
@@ -57,9 +43,33 @@ func (a *app) diffCmd() *cobra.Command {
 	return cmd
 }
 
-// writeDiff prints the file summary, a total, the count of ignored paths,
-// then the patch. Everything in res has already been through termsafe.
-func writeDiff(w io.Writer, res diffResult) {
+// fileNote says what the summary line of a file needs a reviewer to know.
+func fileNote(f sandbox.FileChange) string {
+	var n []string
+	if f.Gitlink {
+		n = append(n, "nested repository: only its commit is compared")
+	}
+	if f.Symlink {
+		n = append(n, "symlink")
+	}
+	if f.Exec {
+		n = append(n, "executable")
+	}
+	if f.Binary {
+		n = append(n, "binary: contains NUL bytes, not shown")
+	}
+	if f.BinaryAttr {
+		n = append(n, "git attributes mark it binary; shown as text")
+	}
+	if len(n) == 0 {
+		return ""
+	}
+	return " [" + strings.Join(n, "; ") + "]"
+}
+
+// writeDiff prints the file summary, a total, what else a reviewer should
+// know, then the patch. Everything in res has already been through termsafe.
+func writeDiff(w io.Writer, res sandbox.DiffResult) {
 	if len(res.Files) == 0 {
 		fmt.Fprintf(w, "no changes since %s\n", short(res.Base))
 	} else {
@@ -77,11 +87,8 @@ func writeDiff(w io.Writer, res diffResult) {
 			if f.OldPath != "" {
 				p = f.OldPath + " -> " + f.Path
 			}
-			if f.Gitlink {
-				p += " [nested repository: only its commit is compared]"
-			}
 			added, deleted = added+f.Added, deleted+f.Deleted
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", st, a, d, p)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s%s\n", st, a, d, p, fileNote(f))
 		}
 		tw.Flush()
 		fmt.Fprintf(w, "%d file(s) changed, +%d -%d since %s\n", len(res.Files), added, deleted, short(res.Base))
@@ -91,7 +98,13 @@ func writeDiff(w io.Writer, res diffResult) {
 		if res.IgnoredCapped {
 			more = " or more"
 		}
-		fmt.Fprintf(w, "%d%s ignored path(s) not shown (git ignores them, so the agent can keep files there)\n", res.Ignored, more)
+		fmt.Fprintf(w, "%d%s ignored untracked path(s) not shown (git ignores them, so the agent can keep files there)\n", res.Ignored, more)
+	}
+	if res.CaseCollisions > 0 {
+		fmt.Fprintf(w, "%d path(s) differ only by case and collide on a case-insensitive file system: %s\n", res.CaseCollisions, strings.Join(res.CaseExamples, ", "))
+	}
+	if res.NonASCII > 0 {
+		fmt.Fprintf(w, "%d path(s) have non-ASCII characters, which can imitate ASCII ones: %s\n", res.NonASCII, strings.Join(res.NonASCIIExamples, ", "))
 	}
 	if res.Patch != nil && *res.Patch != "" {
 		fmt.Fprintf(w, "\n%s", *res.Patch)
