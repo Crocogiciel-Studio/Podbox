@@ -2,10 +2,13 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -32,7 +35,10 @@ func run(args []string) int {
 	a := &app{out: &output.Printer{Mode: output.Text, Out: os.Stdout, Err: os.Stderr}}
 	root := a.newRoot()
 	root.SetArgs(args)
-	err := root.Execute()
+	// An interrupt cancels the command, so its cleanup (temporary files and refs) runs.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	err := root.ExecuteContext(ctx)
 	if err == nil {
 		return output.ExitOK
 	}

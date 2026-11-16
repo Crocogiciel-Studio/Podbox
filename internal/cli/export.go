@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/sandbox"
 )
 
@@ -26,20 +25,16 @@ podbox/<sandbox>/<agent branch>, or --branch-name) from a bundle the host
 verifies and fetches with object checks. It never checks it out and never
 overwrites a branch.
 
---as patch writes a patch series for git apply (default <sandbox>.patch in the
-current directory, or --out) and never overwrites a file.
+--as patch writes one combined diff for git apply (default <sandbox>.patch in
+the current directory, or --out), without commit messages, and never overwrites a file.
 
 Only committed work is exported; nothing is merged. Commits that touch a masked
 path are refused unless --include-masked is passed.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			switch {
-			case as != sandbox.AsBranch && as != sandbox.AsPatch:
-				return output.Errorf(output.ExitUsage, "--as is required: branch or patch")
-			case as == sandbox.AsPatch && branchName != "":
-				return output.Errorf(output.ExitUsage, "--branch-name goes with --as branch")
-			case as == sandbox.AsBranch && out != "":
-				return output.Errorf(output.ExitUsage, "--out goes with --as patch")
+			opt := sandbox.ExportOptions{As: as, BranchName: branchName, Out: out, IncludeMasked: includeMasked}
+			if err := opt.Validate(); err != nil {
+				return err
 			}
 			m, err := a.manager(cmd.Context())
 			if err != nil {
@@ -48,7 +43,7 @@ path are refused unless --include-masked is passed.`,
 			if v, err := strconv.ParseInt(os.Getenv("PODBOX_EXPORT_MAX_BYTES"), 10, 64); err == nil && v > 0 { // test knob
 				m.MaxExport = v
 			}
-			res, err := m.Export(cmd.Context(), args[0], sandbox.ExportOptions{As: as, BranchName: branchName, Out: out, IncludeMasked: includeMasked})
+			res, err := m.Export(cmd.Context(), args[0], opt)
 			if err != nil {
 				return err
 			}
