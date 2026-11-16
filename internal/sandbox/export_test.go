@@ -501,6 +501,17 @@ func TestExportMasked(t *testing.T) {
 	}
 }
 
+func TestExportNotExportedSkipsMaskedPaths(t *testing.T) {
+	f := newFixture(t)
+	os.MkdirAll(filepath.Dir(f.m.Store.ProjectIgnorePath("s")), 0o700)
+	os.WriteFile(f.m.Store.ProjectIgnorePath("s"), []byte("secret.txt\n"), 0o600)
+	f.agent("echo dirty >> a.txt; echo u > untracked.txt; echo masked > untracked.key; rm secret.txt")
+	res, err := f.export(ExportOptions{As: AsBranch})
+	if err != nil || res.NotExported.Uncommitted != 1 || res.NotExported.Untracked != 1 {
+		t.Errorf("%v %+v", err, res.NotExported)
+	}
+}
+
 func TestExportWarnsOnDangerousFiles(t *testing.T) {
 	f := newFixture(t)
 	f.agent("ln -s /etc/passwd link; printf '*.x filter=evil\\n' > .gitattributes; mkdir .husky; echo x > .husky/pre-commit; printf 'a\\000b' > nul.sh; git add -A; git commit -qm danger")
@@ -635,9 +646,7 @@ func TestExportBadBundles(t *testing.T) {
 func TestExportTooLarge(t *testing.T) {
 	f := newFixture(t)
 	f.agent("head -c 200000 /dev/urandom | od -An -tx1 > big.txt; git add -A; git commit -qm big")
-	old := maxExport
-	maxExport = 1000
-	defer func() { maxExport = old }()
+	f.m.MaxExport = 1000
 	out := filepath.Join(t.TempDir(), "p.patch")
 	for _, opt := range []ExportOptions{{As: AsBranch}, {As: AsPatch, Out: out}} {
 		if _, err := f.export(opt); !errors.Is(err, ErrTooLarge) {

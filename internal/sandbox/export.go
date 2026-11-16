@@ -20,8 +20,8 @@ import (
 // ExportSchema is the version of the JSON of podbox export.
 const ExportSchema = 1
 
-// maxExport caps a bundle or a patch read from the sandbox (a variable for tests).
-var maxExport int64 = 256 << 20
+// DefaultMaxExport caps a bundle or a patch read from the sandbox.
+const DefaultMaxExport = 256 << 20
 
 // maxListed caps the commits and file names an export lists.
 const maxListed = 20
@@ -228,6 +228,16 @@ func parseStatus(out []byte) (uncommitted, untracked []string) {
 	return
 }
 
+func without(paths []string, rules maskSet) []string {
+	var out []string
+	for _, p := range paths {
+		if !rules.masked(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func listed(paths []string) []string {
 	out := []string{}
 	for i, p := range paths {
@@ -399,7 +409,14 @@ func (m *Manager) Export(ctx context.Context, name string, opt ExportOptions) (r
 	if err != nil {
 		return res, err
 	}
+	rules, err := m.maskRules(meta)
+	if err != nil {
+		return res, err
+	}
+	// A masked tracked file is a device in the clone, so git always lists it as
+	// changed: that is the mask, not the agent's work.
 	unc, untr := parseStatus(st)
+	unc, untr = without(unc, rules), without(untr, rules)
 	res.NotExported = NotExported{Uncommitted: len(unc), Untracked: len(untr), UncommittedFiles: listed(unc), UntrackedFiles: listed(untr)}
 	if res.Commits == 0 {
 		return res, nil
@@ -409,6 +426,13 @@ func (m *Manager) Export(ctx context.Context, name string, opt ExportOptions) (r
 		return m.exportBranch(ctx, sess, host, meta, res, agentBranch, opt, tmp)
 	}
 	return m.exportPatch(ctx, sess, meta, res, opt)
+}
+
+func (m *Manager) exportCap() int64 {
+	if m.MaxExport > 0 {
+		return m.MaxExport
+	}
+	return DefaultMaxExport
 }
 
 // maskRules reads what masks the sandbox has: the host's .sandboxignore
@@ -475,14 +499,14 @@ func (m *Manager) exportBranch(ctx context.Context, sess *gitSession, host hostg
 	if err != nil {
 		return res, err
 	}
-	w := &fileCap{f: f, max: maxExport}
+	w := &fileCap{f: f, max: m.exportCap()}
 	// HEAD names no agent-chosen ref in an argument; the host checks the
 	// bundle's tip against the head read just before.
 	err = sess.into(sess.agent, nil, w, "bundle", "create", "-", "HEAD", "^"+meta.Base)
 	f.Close()
 	if err != nil {
 		if w.over {
-			return res, fmt.Errorf("%w: the bundle is over %d MiB", ErrTooLarge, maxExport>>20)
+			return res, fmt.Errorf("%w: the bundle is over %d MiB", ErrTooLarge, m.exportCap()>>20)
 		}
 		return res, err
 	}
@@ -589,7 +613,7 @@ func (m *Manager) exportPatch(ctx context.Context, sess *gitSession, meta Meta, 
 	if err != nil {
 		return res, err
 	}
-	w := &fileCap{f: f, max: maxExport}
+	w := &fileCap{f: f, max: m.exportCap()}
 	args := append([]string{
 		"-c", "format.useAutoBase=false", "-c", "format.coverLetter=false", "-c", "format.numbered=false", "-c", "format.thread=false",
 		"-c", "format.attach=false", "-c", "format.signOff=false",
@@ -604,7 +628,7 @@ func (m *Manager) exportPatch(ctx context.Context, sess *gitSession, meta Meta, 
 	if err != nil {
 		_ = os.Remove(out) // only the file this call created: O_EXCL made it
 		if w.over {
-			return res, fmt.Errorf("%w: the patch is over %d MiB", ErrTooLarge, maxExport>>20)
+			return res, fmt.Errorf("%w: the patch is over %d MiB", ErrTooLarge, m.exportCap()>>20)
 		}
 		return res, err
 	}

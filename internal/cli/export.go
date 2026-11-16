@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -42,6 +44,9 @@ path are refused unless --include-masked is passed.`,
 			m, err := a.manager(cmd.Context())
 			if err != nil {
 				return err
+			}
+			if v, err := strconv.ParseInt(os.Getenv("PODBOX_EXPORT_MAX_BYTES"), 10, 64); err == nil && v > 0 { // test knob
+				m.MaxExport = v
 			}
 			res, err := m.Export(cmd.Context(), args[0], sandbox.ExportOptions{As: as, BranchName: branchName, Out: out, IncludeMasked: includeMasked})
 			if err != nil {

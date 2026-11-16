@@ -43,8 +43,10 @@ type Manager struct {
 	// Home and Owned bound the workspaces accepted (see workspace.CheckRoot).
 	Home  string
 	Owned []string
-	// GitTimeout bounds each git command of Diff; zero means DefaultGitTimeout.
+	// GitTimeout bounds each git command of Diff and Export; zero means DefaultGitTimeout.
 	GitTimeout time.Duration
+	// MaxExport caps a bundle or patch of Export; zero means DefaultMaxExport.
+	MaxExport int64
 }
 
 // Status is a sandbox as seen from the engine and the state directory.
