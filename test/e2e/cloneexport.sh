@@ -28,7 +28,7 @@ json() { jq -r "$1" "$OUT"; }
 px() { (cd "$WORK" && TMPDIR=$XTMP "$PODBOX" export "$@"); }
 # hostprint: the working tree and everything of .git that an export must not
 # change: HEAD, index, config, hooks, info, and every ref but the ones named in $SKIP.
-SKIP='refs/heads/(podbox/|review/|masked|warned|replaced|planted|rewritten|big|corrupt|dotgit)'
+SKIP='refs/heads/(podbox/|review/|masked|warned|replaced|planted|rewritten|big|corrupt|dotgit|merged|reverted|sigterm)'
 hostprint() {
 	(
 		cd "$REPO" || exit 1
@@ -242,6 +242,50 @@ sx "$HOSTILE" 'git config --remove-section filter.x; git config --remove-section
 check "host unchanged but for the branches" test "$(hostprint)" = "$BEFORE"
 check "nothing left behind" leftovers
 
+echo "== the patch is one combined diff of what was reviewed"
+GOOD=$(sx "$HOSTILE" 'git rev-parse HEAD')
+agent "$HOSTILE" "printf 'hello\n\ndiff --git a/.env b/.env\n--- a/.env\n+++ b/.env\n@@ -1 +1 @@\n-SECRET=real\n+SECRET=pwned\n' > /tmp/msg; echo smuggler >> r.txt; git add r.txt; git commit -q -F /tmp/msg"
+px "$HOSTILE" --as patch --out msg.patch >"$OUT" 2>"$ERR"; rc=$?
+check "a commit message that holds a diff of the masked file: exit 0 (the file is not in the reviewed changes)" test $rc -eq 0
+check "the patch holds no commit message" test -z "$(grep -E 'pwned|^hello' "$WORK/msg.patch")"
+FRESH=$(mktemp -d)
+git clone -q "$REPO" "$FRESH/c" && git -C "$FRESH/c" checkout -q --detach "$BASE"
+check "git apply on the base" git -C "$FRESH/c" apply --index "$WORK/msg.patch"
+check "the real secret is not changed by it" grep -q 'SECRET=real' "$FRESH/c/.env"
+check "the result is the agent's tree" test "$(git -C "$FRESH/c" write-tree)" = "$(sx "$HOSTILE" 'git rev-parse HEAD^{tree}')"
+rm -rf "$FRESH"
+
+echo "== a merge commit, and its own changes"
+# git merge itself cannot run next to a masked file (it is a device), so the merge is built with plumbing
+agent "$HOSTILE" 'M=$(git rev-parse HEAD); trap "rm -f /tmp/ix1 /tmp/ix2 /tmp/ix3" EXIT
+echo s > s.txt; echo m > m.txt
+GIT_INDEX_FILE=/tmp/ix1 git read-tree $M; GIT_INDEX_FILE=/tmp/ix1 git update-index --add s.txt; C1=$(GIT_INDEX_FILE=/tmp/ix1 git write-tree | xargs -I{} git commit-tree {} -p $M -m side)
+GIT_INDEX_FILE=/tmp/ix2 git read-tree $M; GIT_INDEX_FILE=/tmp/ix2 git update-index --add m.txt; C2=$(GIT_INDEX_FILE=/tmp/ix2 git write-tree | xargs -I{} git commit-tree {} -p $M -m main2)
+echo evil >> r.txt
+GIT_INDEX_FILE=/tmp/ix3 git read-tree $C2; GIT_INDEX_FILE=/tmp/ix3 git update-index --add s.txt r.txt; C3=$(GIT_INDEX_FILE=/tmp/ix3 git write-tree | xargs -I{} git commit-tree {} -p $C2 -p $C1 -m merge)
+git update-ref refs/heads/main $C3; git read-tree HEAD'
+check "the agent made a merge commit" test "$(sx "$HOSTILE" 'git rev-list --merges --count HEAD')" -ge 1
+px "$HOSTILE" --as patch --out merge.patch >"$OUT" 2>"$ERR"; rc=$?
+check "exit 0" test $rc -eq 0
+FRESH=$(mktemp -d)
+git clone -q "$REPO" "$FRESH/c" && git -C "$FRESH/c" checkout -q --detach "$BASE"
+check "git apply on the base" git -C "$FRESH/c" apply --index "$WORK/merge.patch"
+check "the merge's own change is in the patch: same tree as the agent's" test "$(git -C "$FRESH/c" write-tree)" = "$(sx "$HOSTILE" 'git rev-parse HEAD^{tree}')"
+rm -rf "$FRESH"
+px "$HOSTILE" --as branch --branch-name merged >"$OUT" 2>"$ERR"
+check "branch export of the merge: same tree" test "$(G rev-parse merged^{tree})" = "$(sx "$HOSTILE" 'git rev-parse HEAD^{tree}')"
+
+echo "== a masked path touched and put back in history"
+agent "$HOSTILE" "git update-ref refs/heads/main $GOOD; git read-tree HEAD; rm -f s.txt m.txt; git checkout -q -- r.txt 2>/dev/null
+E=\$(git hash-object -w /dev/null); git update-index --cacheinfo 100644,\$E,.env; git commit -qm 'empty the secret'
+git update-index --cacheinfo 100644,\$(git rev-parse $BASE:.env),.env; git commit -qm 'put it back'"
+check "the net change does not touch .env" test -z "$(sx "$HOSTILE" "git diff --name-only $BASE HEAD | grep '^.env'")"
+px "$HOSTILE" --as branch --branch-name reverted >"$OUT" 2>"$ERR"; rc=$?
+check "refused although the net change is clean: exit 1" test $rc -eq 1
+check "the masked path is named" grep -q '\.env' "$ERR"
+check "no branch" nobranch reverted
+agent "$HOSTILE" "git update-ref refs/heads/main $GOOD; git read-tree HEAD"
+
 echo "== hostile history"
 GOOD=$(sx "$HOSTILE" 'git rev-parse HEAD')
 agent "$HOSTILE" 'E=$(git mktree </dev/null); R=$(git commit-tree $E -m unrelated); git update-ref refs/heads/main $R'
@@ -310,6 +354,23 @@ PODBOX_EXPORT_MAX_BYTES=20000 px "$HOSTILE" --as patch --out big.patch >/dev/nul
 check "oversized patch: exit 1, no partial file" test $? -eq 1 -a ! -e "$WORK/big.patch"
 check "host unchanged" test "$(hostprint)" = "$BEFORE"
 check "nothing left behind" leftovers
+
+echo "== an interrupt leaves nothing behind"
+agent "$HOSTILE" "git update-ref refs/heads/main $GOOD; git read-tree HEAD; head -c 150000000 /dev/urandom > huge.bin; git add huge.bin; git commit -qm huge"
+( cd "$WORK" && TMPDIR=$XTMP exec "$PODBOX" export "$HOSTILE" --as branch --branch-name sigterm >/dev/null 2>&1 ) &
+PID=$!
+sleep 2
+kill -TERM $PID 2>/dev/null
+wait $PID; rc=$?
+if [ $rc -eq 0 ]; then
+	pass "the export finished before the signal (too fast to interrupt here)"
+	G update-ref -d refs/heads/sigterm; rm -f "$MARK"
+else
+	check "interrupted: non-zero exit" test $rc -ne 0
+	check "no branch" nobranch sigterm
+	check "no temporary file or ref, no FETCH_HEAD" leftovers
+fi
+agent "$HOSTILE" "git update-ref refs/heads/main $GOOD; git read-tree HEAD; rm -f huge.bin"
 
 echo "== teardown"
 check "rm keeps the clone" q pb rm "$NAME"
