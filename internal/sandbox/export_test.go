@@ -103,6 +103,11 @@ func TestAnalyzeWarnings(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("got %v want %v", got, want)
 	}
+	// a path changed by several commits counts once
+	twice := analyze([]rawEntry{r("120000", "l"), r("120000", "l"), r("100644", "a"), r("100644", "a")}, make([]patchSection, 4))
+	if len(twice) != 1 || twice[0].Count != 1 {
+		t.Errorf("duplicates: %+v", twice)
+	}
 	if len(analyze([]rawEntry{r("100644", "a.go")}, make([]patchSection, 1))) != 0 {
 		t.Error("a plain file warns")
 	}
@@ -332,7 +337,7 @@ func TestExportBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Exported || res.Branch != "podbox/s/main" || res.Commits != 2 || !res.HostVerified || res.FilesChanged != 2 || len(res.CommitList) != 2 {
+	if !res.Exported || res.Branch != "podbox/s/main" || res.Commits != 2 || !res.HostVerified || res.FilesChanged != 2 || len(res.CommitList) != 2 || len(res.Warnings) != 0 {
 		t.Errorf("%+v", res)
 	}
 	if got := hostGit(t, f.host, "rev-parse", "podbox/s/main"); got != res.Head || got != hostGit(t, f.clone, "rev-parse", "HEAD") {
@@ -601,9 +606,8 @@ func TestExportFsckRefusesDotGit(t *testing.T) {
 	tree := sh(t, f.clone, "git hash-object -w -t tree --literally --stdin", "100644 .git\x00"+string(id))
 	sh(t, f.clone, "c=$(git commit-tree "+tree+" -p HEAD -m dotgit); git update-ref HEAD $c")
 	_, err := f.export(ExportOptions{As: AsBranch})
-	t.Logf("err: %v", err)
-	if !errors.Is(err, hostgit.ErrBadBundle) {
-		t.Errorf("a .git tree entry was accepted: %v", err)
+	if !errors.Is(err, hostgit.ErrObjectCheck) || errors.Is(err, hostgit.ErrBundleVerify) {
+		t.Errorf("a .git tree entry was not refused by the object checks: %v", err)
 	}
 	if hostGit(t, f.host, "branch", "--list") != "* main" {
 		t.Error("a branch was created")
@@ -623,12 +627,22 @@ func TestExportBadBundles(t *testing.T) {
 		}
 		return nil, false
 	}
-	good := hostGit(t, f.clone, "bundle", "create", "-", "HEAD", "^"+f.meta.Base)
-	_ = good
-	for name, b := range map[string]string{"junk": "this is not a bundle", "empty": "", "truncated": "# v2 git bundle\n" + f.meta.Base + " \n\nPACK\x00\x00"} {
+	gc := exec.Command("git", "bundle", "create", "-", "HEAD", "^"+f.meta.Base)
+	gc.Dir = f.clone
+	good, err := gc.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range map[string]string{"junk": "this is not a bundle", "empty": "", "bad header": "# v2 git bundle\n" + f.meta.Base + " \n\nPACK\x00\x00", "truncated": string(good[:len(good)-30])} {
 		bundle = b
-		if _, err := f.export(ExportOptions{As: AsBranch}); !errors.Is(err, hostgit.ErrBadBundle) {
+		_, err := f.export(ExportOptions{As: AsBranch})
+		if !errors.Is(err, hostgit.ErrBadBundle) {
 			t.Errorf("%s: %v", name, err)
+		}
+		// junk and an empty file are refused by git bundle verify, a truncated pack by the object checks of the fetch
+		wantVerify := name != "truncated"
+		if errors.Is(err, hostgit.ErrBundleVerify) != wantVerify || errors.Is(err, hostgit.ErrObjectCheck) == wantVerify {
+			t.Errorf("%s: refused by the wrong layer: %v", name, err)
 		}
 		f.noLeftovers()
 	}
@@ -715,16 +729,42 @@ func TestExportCommandsAreHardened(t *testing.T) {
 			t.Errorf("not neutralised: %v", a)
 		}
 		if strings.Contains(j, " format-patch ") {
+			t.Errorf("a patch with commit messages is made: %v", a)
+		}
+		if strings.Contains(j, " diff --binary ") {
 			sawPatch = true
-			for _, want := range []string{"--stdout", "--binary", "--full-index", "--no-signature", "--no-ext-diff", "--no-textconv", "^{}"} {
-				if want != "^{}" && !strings.Contains(j, want) {
-					t.Errorf("format-patch lacks %s: %v", want, a)
+			for _, want := range []string{"--full-index", "--no-ext-diff", "--no-textconv", "--no-renames"} {
+				if !strings.Contains(j, want) {
+					t.Errorf("the patch diff lacks %s: %v", want, a)
 				}
 			}
 		}
+		if (strings.Contains(j, " log -p ") || strings.Contains(j, " --raw ") || strings.Contains(j, " diff ")) && !strings.Contains(j, " diff --binary ") && !strings.Contains(j, "core.bigFileThreshold=") {
+			t.Errorf("a log without the big file threshold: %v", a)
+		}
 	}
 	if !sawPatch {
-		t.Error("format-patch not run")
+		t.Error("the combined diff was not run")
+	}
+}
+
+func TestOptionsValidate(t *testing.T) {
+	for o, ok := range map[ExportOptions]bool{
+		{As: AsBranch}: true, {As: AsPatch}: true, {As: AsBranch, BranchName: "x"}: true, {As: AsPatch, Out: "x"}: true, {As: AsBranch, IncludeMasked: true}: true,
+		{}: false, {As: "zip"}: false, {As: AsPatch, BranchName: "x"}: false, {As: AsBranch, Out: "x"}: false,
+	} {
+		if err := o.Validate(); (err == nil) != ok || err != nil && !errors.Is(err, ErrBadExport) {
+			t.Errorf("%+v: %v", o, err)
+		}
+	}
+}
+
+func TestSubName(t *testing.T) {
+	if got := subName([]string{"-c", "log.showSignature=false", "log", "-z"}); got != "log" {
+		t.Errorf("%q", got)
+	}
+	if got := subName([]string{"status"}); got != "status" {
+		t.Errorf("%q", got)
 	}
 }
 

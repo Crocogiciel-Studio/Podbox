@@ -152,6 +152,19 @@ func (s *gitSession) fail(sub string, err error) error {
 	return fmt.Errorf("git %s: %w", sub, err)
 }
 
+// subName is the git subcommand of an argument list: the first argument that
+// is not a -c option or its value.
+func subName(sub []string) string {
+	for i := 0; i < len(sub); i++ {
+		if sub[i] == "-c" {
+			i++
+			continue
+		}
+		return sub[i]
+	}
+	return sub[0]
+}
+
 // into runs git with env, an optional stdin and the caller's stdout.
 func (s *gitSession) into(env map[string]string, stdin []byte, out limitedWriter, sub ...string) error {
 	var in io.Reader
@@ -159,7 +172,7 @@ func (s *gitSession) into(env map[string]string, stdin []byte, out limitedWriter
 		in = bytes.NewReader(stdin)
 	}
 	if err := s.m.runInto(s.ctx, s.meta, gitArgs(s.project, s.limit, sub...), env, in, out); err != nil {
-		return s.fail(sub[0], err)
+		return s.fail(subName(sub), err)
 	}
 	return nil
 }

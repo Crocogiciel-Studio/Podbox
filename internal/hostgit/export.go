@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,11 @@ var (
 	ErrRefExists = errors.New("branch already exists")
 	// ErrBadBundle reports a bundle the host refuses.
 	ErrBadBundle = errors.New("bundle rejected")
+	// ErrBundleVerify says which check refused a bundle: git bundle verify
+	// (malformed, or prerequisites the repository lacks)...
+	ErrBundleVerify = errors.New("bundle verify failed")
+	// ErrObjectCheck ...or the object checks of the fetch (fsck).
+	ErrObjectCheck = errors.New("object check failed")
 	// ErrBadRefName reports a name git cannot use as a branch.
 	ErrBadRefName = errors.New("invalid branch name")
 )
@@ -128,7 +134,7 @@ func (h Host) CountRange(ctx context.Context, base, tip string) (int, error) {
 // its prerequisite commits present.
 func (h Host) BundleVerify(ctx context.Context, file string) error {
 	if _, err := h.Output(ctx, "bundle", "verify", file); err != nil {
-		return fmt.Errorf("%w: %v", ErrBadBundle, err)
+		return fmt.Errorf("%w: %w: %v", ErrBadBundle, ErrBundleVerify, err)
 	}
 	return nil
 }
@@ -151,33 +157,81 @@ func (h Host) BundleHeads(ctx context.Context, file string) ([]BundleHead, error
 	return heads, nil
 }
 
-// ImportBranch fetches ref of a verified bundle into a temporary ref with
-// object checks on, hands the tip to check, and then creates refs/heads/target
-// at the tip only if target does not exist (an update-ref with the zero old
-// value: atomic, never an overwrite). The temporary ref is deleted on every
-// path. It writes no index, no working tree, no config and no other ref.
-// It returns the tip.
-func (h Host) ImportBranch(ctx context.Context, file, ref, target string, check func(tip string) error) (string, error) {
-	var rnd [8]byte
-	if _, err := rand.Read(rnd[:]); err != nil {
+// fsckConfig turns the object checks on. The fetch that matters runs in the
+// quarantine repository, which has no configuration of the host's.
+func fsckConfig() []string {
+	return []string{"-c", "transfer.fsckObjects=true", "-c", "fetch.fsckObjects=true"}
+}
+
+// quarantine makes an empty bare repository that reads the host's objects
+// (alternates) and none of its configuration, hooks or attributes. The bundle
+// is fetched and reviewed there, so the host's repository-local settings
+// (fsck severities, a skip list, an include) cannot weaken the object checks,
+// and a bundle that is refused leaves no object in the host repository.
+func (h Host) quarantine(ctx context.Context) (Host, error) {
+	dir, err := os.MkdirTemp(h.Home, "quarantine-")
+	if err != nil {
+		return Host{}, err
+	}
+	q := Host{WS: dir, Home: h.Home}
+	if _, err := q.Output(ctx, "init", "--bare", "-q", "--template=", q.WS); err != nil {
+		return q, err
+	}
+	out, err := h.Output(ctx, "rev-parse", "--git-path", "objects")
+	if err != nil {
+		return q, err
+	}
+	objects := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(objects) {
+		objects = filepath.Join(h.WS, objects)
+	}
+	return q, os.WriteFile(filepath.Join(q.WS, "objects", "info", "alternates"), []byte(objects+"\n"), 0o600)
+}
+
+// ImportBranch brings ref of a verified bundle into the host repository as
+// the new branch refs/heads/target. The bundle is fetched, with object checks,
+// into a quarantine repository (see quarantine); check sees that repository
+// and the tip, and refuses by returning an error. Only then are the objects
+// fetched into the host, into a temporary ref, and the branch created with
+// update-ref and the zero old value: atomic, never an overwrite. The temporary
+// ref is deleted on every path. The index, working tree, configuration and
+// other refs are never written. It returns the tip.
+func (h Host) ImportBranch(ctx context.Context, file, ref, target string, check func(q Host, tip string) error) (string, error) {
+	q, err := h.quarantine(ctx)
+	defer os.RemoveAll(q.WS)
+	if err != nil {
 		return "", err
 	}
-	tmp := "refs/podbox/tmp/" + hex.EncodeToString(rnd[:])
-	defer func() { // also on failure: the fetch may have created it
-		_, _ = h.Output(context.WithoutCancel(ctx), "update-ref", "-d", tmp)
-	}()
-	if _, err := h.Output(ctx, "-c", "transfer.fsckObjects=true", "-c", "fetch.fsckObjects=true", "-c", "fetch.writeCommitGraph=false",
+	const qref = "refs/podbox/tip"
+	if _, err := q.Output(ctx, append(fsckConfig(), "-c", "fetch.writeCommitGraph=false",
 		"fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--no-auto-maintenance", "--no-auto-gc",
-		file, ref+":"+tmp); err != nil {
-		return "", fmt.Errorf("%w: %v", ErrBadBundle, err)
+		file, ref+":"+qref)...); err != nil {
+		return "", fmt.Errorf("%w: %w: %v", ErrBadBundle, ErrObjectCheck, err)
 	}
-	out, err := h.Output(ctx, "rev-parse", "--verify", "-q", tmp+"^{commit}")
+	out, err := q.Output(ctx, "rev-parse", "--verify", "-q", qref+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("%w: the fetched tip is not a commit", ErrBadBundle)
 	}
 	tip := strings.TrimSpace(string(out))
-	if err := check(tip); err != nil {
+	if err := check(q, tip); err != nil {
 		return tip, err
+	}
+
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return tip, err
+	}
+	tmp := "refs/podbox/tmp/" + hex.EncodeToString(rnd[:])
+	defer func() { // also on failure and on an interrupt: the fetch may have created it
+		_, _ = h.Output(context.WithoutCancel(ctx), "update-ref", "-d", tmp)
+	}()
+	if _, err := h.Output(ctx, append(fsckConfig(), "-c", "fetch.writeCommitGraph=false",
+		"fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--no-auto-maintenance", "--no-auto-gc",
+		q.WS, qref+":"+tmp)...); err != nil {
+		return tip, fmt.Errorf("%w: %w: %v", ErrBadBundle, ErrObjectCheck, err)
+	}
+	if got, err := h.Output(ctx, "rev-parse", "--verify", "-q", tmp+"^{commit}"); err != nil || strings.TrimSpace(string(got)) != tip {
+		return tip, fmt.Errorf("%w: the objects fetched into the repository are not the ones reviewed", ErrBadBundle)
 	}
 	zero := strings.Repeat("0", len(tip))
 	if _, err := h.Output(ctx, "update-ref", "-m", "podbox export", "refs/heads/"+target, tip, zero); err != nil {

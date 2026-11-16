@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -45,6 +46,8 @@ var (
 	ErrMaskedTouched = errors.New("the commits touch masked paths")
 	// ErrFileExists reports a patch file that exists; it is never overwritten.
 	ErrFileExists = errors.New("file already exists")
+	// ErrPatchMismatch reports a patch that changes other files than the review listed.
+	ErrPatchMismatch = errors.New("the patch does not match the reviewed changes")
 	// ErrChanged reports a sandbox whose HEAD moved while it was exported.
 	ErrChanged = errors.New("the clone changed during the export")
 )
@@ -55,6 +58,19 @@ type ExportOptions struct {
 	BranchName    string // branch only; default podbox/<sandbox>/<agent branch>
 	Out           string // patch only; default <sandbox>.patch in the current directory
 	IncludeMasked bool
+}
+
+// Validate checks the options on their own, before any sandbox is looked at.
+func (o ExportOptions) Validate() error {
+	switch {
+	case o.As != AsBranch && o.As != AsPatch:
+		return fmt.Errorf("%w: --as is required: branch or patch", ErrBadExport)
+	case o.As == AsPatch && o.BranchName != "":
+		return fmt.Errorf("%w: --branch-name goes with --as branch", ErrBadExport)
+	case o.As == AsBranch && o.Out != "":
+		return fmt.Errorf("%w: --out goes with --as patch", ErrBadExport)
+	}
+	return nil
 }
 
 // NotExported is the work an export leaves in the clone: only commits go.
@@ -136,7 +152,8 @@ func SanitizeBranchPart(s string) string {
 	}
 	out := strings.Join(segs, "/")
 	if len(out) > 100 {
-		out = strings.Trim(out[:100], "/.")
+		// Cut, then clean again: the cut can leave a trailing '/', '.' or ".lock".
+		out = SanitizeBranchPart(out[:100])
 	}
 	if out == "" {
 		return "agent"
@@ -146,39 +163,40 @@ func SanitizeBranchPart(s string) string {
 
 // DefaultBranch is the host branch an export creates by default.
 func DefaultBranch(sandbox, agentBranch string) string {
-	return "podbox/" + sandbox + "/" + SanitizeBranchPart(agentBranch)
+	return "podbox/" + SanitizeBranchPart(sandbox) + "/" + SanitizeBranchPart(agentBranch)
 }
 
 // maskSet decides whether a committed path is masked in a sandbox: by the
 // patterns (the forced ones and .sandboxignore), at the path or at a parent
 // directory, or by the record of masked paths (which follows a rename). The
-// match is also tried on the lower-cased path: on a case-insensitive host
-// ".ENV" is the file ".env".
+// host may ignore case (macOS, Windows), so everything is lower-cased: the
+// patterns, the recorded paths and the candidate. It over-matches by design;
+// Unicode normalisation and NTFS trailing dots, spaces and short names are not
+// handled.
 type maskSet struct {
 	match func(rel string, dir bool) bool
 	rec   map[string]bool
 }
 
 func newMaskSet(ignore []byte, tracked []workspace.Tracked) maskSet {
-	s := maskSet{match: workspace.Matcher(ignore), rec: map[string]bool{}}
+	s := maskSet{match: workspace.MatcherFold(ignore), rec: map[string]bool{}}
 	for _, t := range tracked {
-		s.rec[t.Rel] = true
+		s.rec[strings.ToLower(t.Rel)] = true
 		if t.Now != "" {
-			s.rec[t.Now] = true
+			s.rec[strings.ToLower(t.Now)] = true
 		}
 	}
 	return s
 }
 
 func (s maskSet) masked(p string) bool {
-	for _, q := range []string{p, strings.ToLower(p)} {
-		if s.match(q, false) || s.rec[q] {
+	q := strings.ToLower(p)
+	if s.match(q, false) || s.rec[q] {
+		return true
+	}
+	for i := 0; i < len(q); i++ {
+		if q[i] == '/' && (s.match(q[:i], true) || s.rec[q[:i]]) {
 			return true
-		}
-		for i := 0; i < len(q); i++ {
-			if q[i] == '/' && (s.match(q[:i], true) || s.rec[q[:i]]) {
-				return true
-			}
 		}
 	}
 	return false
@@ -249,6 +267,15 @@ func listed(paths []string) []string {
 	return out
 }
 
+func hasPath(l []string, p string) bool {
+	for _, x := range l {
+		if x == p {
+			return true
+		}
+	}
+	return false
+}
+
 var hookLike = map[string]bool{
 	"lefthook.yml": true, "lefthook.yaml": true, ".lefthook.yml": true, ".lefthook.yaml": true, "lefthook-local.yml": true,
 	".pre-commit-config.yaml": true, ".pre-commit-config.yml": true, "pre-commit": true, ".overcommit.yml": true,
@@ -271,7 +298,9 @@ func analyze(raws []rawEntry, secs []patchSection) []ExportWarning {
 			by[kind] = a
 			order = append(order, kind)
 		}
-		a.paths = append(a.paths, p)
+		if len(a.paths) == 0 || !hasPath(a.paths, p) { // a path changed in several commits counts once
+			a.paths = append(a.paths, p)
+		}
 	}
 	for k, r := range raws {
 		p, b := r.path, path.Base(r.path)
@@ -302,7 +331,15 @@ func analyze(raws []rawEntry, secs []patchSection) []ExportWarning {
 			add("nul", "the file holds NUL bytes, so podbox diff hides its content unless --show-binary is used", p)
 		}
 	}
-	n := nameNotes(raws)
+	var once []rawEntry
+	seenPath := map[string]bool{}
+	for _, r := range raws {
+		if !seenPath[r.path] {
+			seenPath[r.path] = true
+			once = append(once, r)
+		}
+	}
+	n := nameNotes(once)
 	var warns []ExportWarning
 	for _, kind := range order {
 		a := by[kind]
@@ -342,11 +379,8 @@ func (w *fileCap) exceeded() bool { return w.over }
 // and fetches with object checks) or as a patch file. Only committed work
 // goes; nothing is merged, checked out or overwritten.
 func (m *Manager) Export(ctx context.Context, name string, opt ExportOptions) (res ExportResult, err error) {
-	if opt.As != AsBranch && opt.As != AsPatch {
-		return res, fmt.Errorf("%w: --as must be branch or patch", ErrBadExport)
-	}
-	if opt.As == AsPatch && opt.BranchName != "" || opt.As == AsBranch && opt.Out != "" {
-		return res, fmt.Errorf("%w: --branch-name goes with --as branch, --out with --as patch", ErrBadExport)
+	if err := opt.Validate(); err != nil {
+		return res, err
 	}
 	meta, err := m.cloneMeta(ctx, name)
 	if err != nil {
@@ -425,7 +459,7 @@ func (m *Manager) Export(ctx context.Context, name string, opt ExportOptions) (r
 	if opt.As == AsBranch {
 		return m.exportBranch(ctx, sess, host, meta, res, agentBranch, opt, tmp)
 	}
-	return m.exportPatch(ctx, sess, meta, res, opt)
+	return m.exportPatch(ctx, sess, host, meta, res, opt)
 }
 
 func (m *Manager) exportCap() int64 {
@@ -449,21 +483,168 @@ func (m *Manager) maskRules(meta Meta) (maskSet, error) {
 	return newMaskSet(ignore, rec), nil
 }
 
-// review turns a commit range into the result: files, warnings, the masked
-// paths touched (refused unless included).
-func (m *Manager) review(meta Meta, res *ExportResult, raws []rawEntry, secs []patchSection, include bool) error {
-	if len(raws) != len(secs) {
-		return fmt.Errorf("git listed %d files but its patch has %d", len(raws), len(secs))
+// gitRunner runs read-only git for the range review, in the sandbox or on the
+// host, with the same arguments.
+type gitRunner struct {
+	out    func(args ...string) ([]byte, error)
+	stream func(w limitedWriter, args ...string) error
+}
+
+func sandboxRunner(sess *gitSession) gitRunner {
+	return gitRunner{
+		out:    func(a ...string) ([]byte, error) { return sess.git(sess.agent, a...) },
+		stream: func(w limitedWriter, a ...string) error { return sess.into(sess.agent, nil, w, a...) },
 	}
-	res.FilesChanged = len(raws)
-	res.Warnings = analyze(raws, secs)
+}
+
+func hostRunner(ctx context.Context, h hostgit.Host) gitRunner {
+	return gitRunner{
+		out:    func(a ...string) ([]byte, error) { return h.Output(ctx, a...) },
+		stream: func(w limitedWriter, a ...string) error { return h.Stream(ctx, w, a...) },
+	}
+}
+
+// rangeDiff are the options of every diff of a range: nothing a configuration
+// can change, no program run. No --text: with core.bigFileThreshold, git calls
+// a file past it binary without reading it, which keeps a decompression bomb
+// from being inflated by the review; a binary file counts as hidden.
+var rangeDiff = []string{"--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=none"}
+
+// bigFile is the size past which the review does not read a blob.
+const bigFile = "64m"
+
+// maxReviewSections caps the memory the review keeps (the start of each file's patch).
+const maxReviewSections = 256 << 20
+
+// hiddenContent: the file holds NUL bytes, or git did not show it as text.
+func hiddenContent(s patchSection) bool {
+	return s.nul || bytes.Contains(s.data, []byte("\nBinary files ")) || bytes.Contains(s.data, []byte("\nGIT binary patch"))
+}
+
+// readSections streams a patch into sections, in the order git printed the files.
+func readSections(run gitRunner, args ...string) ([]patchSection, error) {
+	sw := newSectionWriter(16<<10, maxReviewSections)
+	if err := run.stream(sw, args...); err != nil {
+		return nil, err
+	}
+	if err := sw.finish(); err != nil {
+		return nil, fmt.Errorf("%w: the review of the commits is too large", err)
+	}
+	for i := range sw.secs {
+		sw.secs[i].nul = hiddenContent(sw.secs[i])
+	}
+	return sw.secs, nil
+}
+
+// parseRaw reads -z --raw records and nothing else.
+func parseRaw(out []byte) ([]rawEntry, error) {
+	raws, nums, err := parseDiff(out)
+	if err == nil && len(nums) > 0 {
+		err = errors.New("unexpected git output")
+	}
+	return raws, err
+}
+
+// rangeFacts is what a commit range holds: the net change base..tip, and the
+// change of every commit (merges against each parent), so a path touched in
+// one commit and put back in a later one is still seen.
+type rangeFacts struct {
+	net  []rawEntry
+	all  []rawEntry // net and history, one entry per path, mode and blob
+	secs []patchSection
+}
+
+func uniqueKey(r rawEntry) string {
+	return r.path + "\x00" + r.mode + "\x00" + r.oldMode + "\x00" + r.id
+}
+
+func reviewRange(run gitRunner, base, tip string) (rangeFacts, error) {
+	var f rangeFacts
+	pre := []string{"-c", "core.bigFileThreshold=" + bigFile, "-c", "log.showSignature=false"}
+	pair := func(rawArgs, patchArgs []string) ([]rawEntry, []patchSection, error) {
+		out, err := run.out(rawArgs...)
+		if err != nil {
+			return nil, nil, err
+		}
+		raws, err := parseRaw(out)
+		if err != nil {
+			return nil, nil, err
+		}
+		secs, err := readSections(run, patchArgs...)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(raws) != len(secs) {
+			return nil, nil, fmt.Errorf("git listed %d files but its patch has %d", len(raws), len(secs))
+		}
+		return raws, secs, nil
+	}
+	net, netSecs, err := pair(
+		append(append([]string{}, pre...), "diff-tree", "-r", "-z", "--no-commit-id", "--no-renames", base, tip),
+		append(append(append([]string{}, pre...), "diff"), append(rangeDiff, base, tip, "--")...))
+	if err != nil {
+		return f, err
+	}
+	hist, histSecs, err := pair(
+		append(append([]string{}, pre...), "log", "-z", "--raw", "--no-abbrev", "-m", "--no-renames", "--no-ext-diff", "--format=", tip, "^"+base, "--"),
+		append(append(append([]string{}, pre...), "log", "-p", "-m", "--format="), append(rangeDiff, tip, "^"+base, "--")...))
+	if err != nil {
+		return f, err
+	}
+	f.net = net
+	seen := map[string]int{}
+	for _, part := range []struct {
+		raws []rawEntry
+		secs []patchSection
+	}{{net, netSecs}, {hist, histSecs}} {
+		for k, r := range part.raws {
+			if i, ok := seen[uniqueKey(r)]; ok {
+				f.secs[i].nul = f.secs[i].nul || part.secs[k].nul
+				continue
+			}
+			seen[uniqueKey(r)] = len(f.all)
+			f.all = append(f.all, r)
+			f.secs = append(f.secs, patchSection{nul: part.secs[k].nul})
+		}
+	}
+	return f, nil
+}
+
+// commitList reads the first commits of the range, cleaned.
+func commitList(run gitRunner, base, tip string) ([]CommitLine, error) {
+	out, err := run.out("-c", "log.showSignature=false", "log", "-z", "--no-notes", "--no-textconv", "--format=%H %s", "-n", strconv.Itoa(maxListed), tip, "^"+base, "--")
+	if err != nil {
+		return nil, err
+	}
+	list := []CommitLine{}
+	for _, l := range splitNUL(out) {
+		id, subj, _ := strings.Cut(l, " ")
+		list = append(list, CommitLine{ID: id, Subject: termsafe.CleanName(subj)})
+	}
+	return list, nil
+}
+
+// review fills the result from a commit range and refuses it when it touches
+// masked paths (unless included).
+func (m *Manager) review(meta Meta, res *ExportResult, run gitRunner, tip string, include bool) ([]rawEntry, error) {
+	f, err := reviewRange(run, meta.Base, tip)
+	if err != nil {
+		return nil, err
+	}
+	if res.CommitList, err = commitList(run, meta.Base, tip); err != nil {
+		return nil, err
+	}
+	res.FilesChanged = len(f.net)
+	res.Warnings = analyze(f.all, f.secs)
 	rules, err := m.maskRules(meta)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	seen := map[string]bool{}
 	var touched []string
-	for _, r := range raws {
-		if rules.masked(r.path) {
+	for _, r := range f.all {
+		if !seen[r.path] && rules.masked(r.path) {
+			seen[r.path] = true
 			touched = append(touched, r.path)
 		}
 	}
@@ -471,10 +652,8 @@ func (m *Manager) review(meta Meta, res *ExportResult, raws []rawEntry, secs []p
 		res.MaskedTouched = append(res.MaskedTouched, termsafe.CleanName(p))
 		res.MaskedTouchedB64 = append(res.MaskedTouchedB64, base64.StdEncoding.EncodeToString([]byte(p)))
 	}
-	return refuseMasked(touched, include)
+	return f.net, refuseMasked(touched, include)
 }
-
-var rangeDiff = []string{"--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=none"}
 
 func (m *Manager) exportBranch(ctx context.Context, sess *gitSession, host hostgit.Host, meta Meta, res ExportResult, agentBranch string, opt ExportOptions, tmp string) (ExportResult, error) {
 	target := opt.BranchName
@@ -524,38 +703,17 @@ func (m *Manager) exportBranch(ctx context.Context, sess *gitSession, host hostg
 		return res, fmt.Errorf("%w: the bundle holds %s but the clone's HEAD was %s", ErrChanged, heads[0].ID, res.Head)
 	}
 
-	tip, err := host.ImportBranch(ctx, file, "HEAD", target, func(tip string) error {
-		if !host.IsAncestor(ctx, meta.Base, tip) {
+	tip, err := host.ImportBranch(ctx, file, "HEAD", target, func(q hostgit.Host, tip string) error {
+		if !q.IsAncestor(ctx, meta.Base, tip) {
 			return fmt.Errorf("%w (%s): the bundle's commits are not built on it; nothing was exported", ErrHistory, meta.Base)
 		}
-		n, err := host.CountRange(ctx, meta.Base, tip)
+		n, err := q.CountRange(ctx, meta.Base, tip)
 		if err != nil {
 			return err
 		}
 		res.Commits = n
-		out, err := host.Output(ctx, "diff-tree", "-r", "-z", "--no-commit-id", "--no-renames", meta.Base, tip)
-		if err != nil {
-			return err
-		}
-		raws, _, err := parseDiff(out)
-		if err != nil {
-			return err
-		}
-		sw := newSectionWriter(0, maxOutput)
-		if err := host.Stream(ctx, sw, append(append([]string{"diff"}, rangeDiff...), "--text", meta.Base, tip, "--")...); err != nil {
-			return err
-		}
-		if err := sw.finish(); err != nil {
-			return err
-		}
-		if out, err = host.Output(ctx, "-c", "log.showSignature=false", "log", "-z", "--no-notes", "--no-textconv", "--format=%H %s", "-n", strconv.Itoa(maxListed), tip, "^"+meta.Base, "--"); err != nil {
-			return err
-		}
-		for _, l := range splitNUL(out) {
-			id, subj, _ := strings.Cut(l, " ")
-			res.CommitList = append(res.CommitList, CommitLine{ID: id, Subject: termsafe.CleanName(subj)})
-		}
-		return m.review(meta, &res, raws, sw.secs, opt.IncludeMasked)
+		_, err = m.review(meta, &res, hostRunner(ctx, q), tip, opt.IncludeMasked)
+		return err
 	})
 	if err != nil {
 		return res, err
@@ -564,7 +722,44 @@ func (m *Manager) exportBranch(ctx context.Context, sess *gitSession, host hostg
 	return res, nil
 }
 
-func (m *Manager) exportPatch(ctx context.Context, sess *gitSession, meta Meta, res ExportResult, opt ExportOptions) (ExportResult, error) {
+// patchArgs is the one combined diff base..head: no commit message, so nothing
+// the file holds was not reviewed, and the merges' changes are in it.
+func patchArgs(base, head string) []string {
+	return []string{"diff", "--binary", "--full-index", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color",
+		"--ignore-submodules=none", "--src-prefix=a/", "--dst-prefix=b/", base, head, "--"}
+}
+
+// checkPatchFile has the host's git read the finished patch and compares the
+// files it would change with the reviewed list; a difference refuses it.
+func checkPatchFile(ctx context.Context, host hostgit.Host, file string, net []rawEntry) error {
+	out, err := host.Output(ctx, "apply", "--numstat", "-z", file)
+	if err != nil {
+		return fmt.Errorf("the host's git cannot read the patch: %v", err)
+	}
+	got := map[string]bool{}
+	for _, rec := range splitNUL(out) {
+		f := strings.SplitN(rec, "\t", 3)
+		if len(f) != 3 {
+			return fmt.Errorf("unexpected git apply output %q", rec)
+		}
+		got[f[2]] = true
+	}
+	want := map[string]bool{}
+	for _, r := range net {
+		want[r.path] = true
+	}
+	if len(got) != len(want) {
+		return fmt.Errorf("%w: the patch changes %d files, the review listed %d", ErrPatchMismatch, len(got), len(want))
+	}
+	for p := range got {
+		if !want[p] {
+			return fmt.Errorf("%w: the patch changes %q, which the review did not list", ErrPatchMismatch, termsafe.CleanName(p))
+		}
+	}
+	return nil
+}
+
+func (m *Manager) exportPatch(ctx context.Context, sess *gitSession, host hostgit.Host, meta Meta, res ExportResult, opt ExportOptions) (ExportResult, error) {
 	out := opt.Out
 	if out == "" {
 		out = meta.Name + ".patch"
@@ -576,36 +771,14 @@ func (m *Manager) exportPatch(ctx context.Context, sess *gitSession, meta Meta, 
 	if _, err := os.Lstat(out); err == nil {
 		return res, fmt.Errorf("%w: %s; choose another with --out", ErrFileExists, out)
 	}
-	rng := []string{meta.Base + ".." + res.Head}
 	// What the commits change, as the sandbox reports it: git in the sandbox
-	// is the only source of a patch, so the host cannot check this list.
-	raw, err := sess.git(sess.agent, "diff-tree", "-r", "-z", "--no-commit-id", "--no-renames", meta.Base, res.Head)
+	// is the only source of a patch, so the host cannot check this list against
+	// objects, only against the patch it is given.
+	run := sandboxRunner(sess)
+	net, err := m.review(meta, &res, run, res.Head, opt.IncludeMasked)
 	if err != nil {
 		return res, err
 	}
-	raws, _, err := parseDiff(raw)
-	if err != nil {
-		return res, err
-	}
-	sw := newSectionWriter(0, maxOutput)
-	if err := sess.into(sess.agent, nil, sw, append(append([]string{"diff"}, rangeDiff...), "--text", meta.Base, res.Head, "--")...); err != nil {
-		return res, err
-	}
-	if err := sw.finish(); err != nil {
-		return res, err
-	}
-	if log, err := sess.git(sess.agent, "-c", "log.showSignature=false", "log", "-z", "--no-notes", "--no-textconv", "--format=%H %s", "-n", strconv.Itoa(maxListed), res.Head, "^"+meta.Base, "--"); err == nil {
-		for _, l := range splitNUL(log) {
-			id, subj, _ := strings.Cut(l, " ")
-			res.CommitList = append(res.CommitList, CommitLine{ID: id, Subject: termsafe.CleanName(subj)})
-		}
-	} else {
-		return res, err
-	}
-	if err := m.review(meta, &res, raws, sw.secs, opt.IncludeMasked); err != nil {
-		return res, err
-	}
-
 	f, err := os.OpenFile(out, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if errors.Is(err, fs.ErrExist) {
 		return res, fmt.Errorf("%w: %s; choose another with --out", ErrFileExists, out)
@@ -614,16 +787,12 @@ func (m *Manager) exportPatch(ctx context.Context, sess *gitSession, meta Meta, 
 		return res, err
 	}
 	w := &fileCap{f: f, max: m.exportCap()}
-	args := append([]string{
-		"-c", "format.useAutoBase=false", "-c", "format.coverLetter=false", "-c", "format.numbered=false", "-c", "format.thread=false",
-		"-c", "format.attach=false", "-c", "format.signOff=false",
-		"format-patch", "--stdout", "--binary", "--full-index", "--no-signature", "--no-notes", "--no-attach", "--no-cover-letter",
-		"--no-numbered", "--no-thread", "--no-add-header", "--no-to", "--no-cc", "--no-ext-diff", "--no-textconv",
-		"--ignore-submodules=none", "--src-prefix=a/", "--dst-prefix=b/", "-M",
-	}, rng...)
-	err = sess.into(sess.agent, nil, w, append(args, "--")...)
+	err = sess.into(sess.agent, nil, w, patchArgs(meta.Base, res.Head)...)
 	if cerr := f.Close(); err == nil {
 		err = cerr
+	}
+	if err == nil {
+		err = checkPatchFile(ctx, host, out, net)
 	}
 	if err != nil {
 		_ = os.Remove(out) // only the file this call created: O_EXCL made it

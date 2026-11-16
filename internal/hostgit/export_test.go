@@ -78,7 +78,7 @@ func TestImportBranch(t *testing.T) {
 		t.Fatalf("heads %v %v", heads, err)
 	}
 	var seen string
-	tip, err := host.ImportBranch(ctx, bundle, "HEAD", "podbox/s/main", func(tip string) error { seen = tip; return nil })
+	tip, err := host.ImportBranch(ctx, bundle, "HEAD", "podbox/s/main", func(q Host, tip string) error { seen = tip; return nil })
 	if err != nil || tip != heads[0].ID || seen != tip {
 		t.Fatalf("%v tip %s seen %s", err, tip, seen)
 	}
@@ -125,7 +125,7 @@ func TestImportBranchNeverOverwrites(t *testing.T) {
 		git(t, host.WS, "branch", "-f", "other", "HEAD")
 		os.Remove(hook) // the test's own git call fired the hook
 		before := state(t, host.WS)
-		_, err := host.ImportBranch(ctx, bundle, "HEAD", target, func(string) error { return nil })
+		_, err := host.ImportBranch(ctx, bundle, "HEAD", target, func(Host, string) error { return nil })
 		if !errors.Is(err, ErrRefExists) {
 			t.Errorf("%s: %v", target, err)
 		}
@@ -139,7 +139,7 @@ func TestImportBranchNeverOverwrites(t *testing.T) {
 	os.Remove(hook)
 	// a check that refuses creates nothing and leaves no temporary ref
 	wantErr := errors.New("no")
-	if _, err := host.ImportBranch(ctx, bundle, "HEAD", "new", func(string) error { return wantErr }); !errors.Is(err, wantErr) {
+	if _, err := host.ImportBranch(ctx, bundle, "HEAD", "new", func(Host, string) error { return wantErr }); !errors.Is(err, wantErr) {
 		t.Errorf("check error: %v", err)
 	}
 	if git(t, host.WS, "branch", "--list", "new") != "" || git(t, host.WS, "for-each-ref", "refs/podbox") != "" {
@@ -168,7 +168,7 @@ func TestBadBundles(t *testing.T) {
 		t.Errorf("junk heads: %v", err)
 	}
 	trunc := write("trunc", b[:len(b)-40])
-	if _, err := host.ImportBranch(ctx, trunc, "HEAD", "t", func(string) error { return nil }); !errors.Is(err, ErrBadBundle) {
+	if _, err := host.ImportBranch(ctx, trunc, "HEAD", "t", func(Host, string) error { return nil }); !errors.Is(err, ErrBadBundle) {
 		t.Errorf("truncated import: %v", err)
 	}
 	// a prerequisite the host lacks: a bundle of commits on top of a commit only the clone has
@@ -180,11 +180,41 @@ func TestBadBundles(t *testing.T) {
 	if err := host.BundleVerify(ctx, missing); !errors.Is(err, ErrBadBundle) {
 		t.Errorf("missing prerequisite verify: %v", err)
 	}
-	if _, err := host.ImportBranch(ctx, missing, "HEAD", "m", func(string) error { return nil }); !errors.Is(err, ErrBadBundle) {
+	if _, err := host.ImportBranch(ctx, missing, "HEAD", "m", func(Host, string) error { return nil }); !errors.Is(err, ErrBadBundle) {
 		t.Errorf("missing prerequisite import: %v", err)
 	}
 	_ = base
 	if git(t, host.WS, "branch", "--list") != "* main" || git(t, host.WS, "for-each-ref", "refs/podbox") != "" {
 		t.Error("a ref was created")
+	}
+}
+
+// A refused import leaves no object in the host repository, and a cancelled
+// one leaves no ref.
+func TestRefusedImportLeavesNoObject(t *testing.T) {
+	host, clone, _, bundle, _ := fixture(t)
+	tip := git(t, clone, "rev-parse", "HEAD")
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := host.ImportBranch(ctx, bundle, "HEAD", "x", func(q Host, got string) error {
+		if got != tip {
+			t.Errorf("tip %s", got)
+		}
+		if !q.IsCommit(ctx, tip) {
+			t.Error("the quarantine does not hold the tip")
+		}
+		cancel()
+		return ctx.Err()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("%v", err)
+	}
+	if host.IsCommit(context.Background(), tip) {
+		t.Error("the refused commit is in the host's object store")
+	}
+	if git(t, host.WS, "for-each-ref", "refs/podbox") != "" || git(t, host.WS, "branch", "--list", "x") != "" {
+		t.Error("a ref was left")
+	}
+	if left, _ := filepath.Glob(filepath.Join(host.Home, "quarantine-*")); len(left) > 0 {
+		t.Errorf("quarantine left: %v", left)
 	}
 }
