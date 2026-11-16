@@ -15,7 +15,8 @@ func sampleDiff(patch bool) diffResult {
 		{Path: "new.txt", Status: "added", Added: 1, Untracked: true},
 		{Path: "img.png", Status: "added", Binary: true},
 		{Path: "new name", OldPath: "old name", Status: "renamed"},
-	}}
+		{Path: "sub", Status: "added", Gitlink: true},
+	}, Ignored: 3}
 	if patch {
 		p := "diff --git a/a.txt b/a.txt\n+x\n"
 		res.Patch = &p
@@ -27,7 +28,7 @@ func TestWriteDiffText(t *testing.T) {
 	var b bytes.Buffer
 	writeDiff(&b, sampleDiff(true))
 	out := b.String()
-	for _, want := range []string{"STATUS", "untracked", "old name -> new name", "4 file(s) changed, +3 -1 since aaaaaaaaaaaa", "\ndiff --git a/a.txt"} {
+	for _, want := range []string{"STATUS", "untracked", "old name -> new name", "5 file(s) changed, +3 -1 since aaaaaaaaaaaa", "nested repository", "3 ignored path(s) not shown", "\ndiff --git a/a.txt"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in\n%s", want, out)
 		}
@@ -65,8 +66,11 @@ func TestDiffJSONShape(t *testing.T) {
 	if f, ok := empty["files"].([]any); !ok || len(f) != 0 {
 		t.Errorf("files of an empty diff: %v", empty["files"])
 	}
+	if m["ignored"] != float64(3) {
+		t.Errorf("ignored %v", m["ignored"])
+	}
 	f := m["files"].([]any)[0].(map[string]any)
-	for _, k := range []string{"path", "status", "added", "deleted", "binary", "untracked"} {
+	for _, k := range []string{"path", "status", "added", "deleted", "binary", "untracked", "gitlink"} {
 		if _, ok := f[k]; !ok {
 			t.Errorf("file key %q missing", k)
 		}

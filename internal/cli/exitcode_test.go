@@ -64,6 +64,7 @@ func TestExitCodes(t *testing.T) {
 		{"clone exists", fmt.Errorf("%w for s", sandbox.ErrCloneExists), output.ExitGeneric},
 		{"not a clone sandbox", fmt.Errorf("%w: s", sandbox.ErrNotClone), output.ExitUsage},
 		{"output too large", fmt.Errorf("%w: s", sandbox.ErrTooLarge), output.ExitGeneric},
+		{"git timed out", fmt.Errorf("%w after 120s", sandbox.ErrTimeout), output.ExitGeneric},
 		{"mode mismatch", fmt.Errorf("%w: s", sandbox.ErrModeMismatch), output.ExitGeneric},
 	}
 	for _, c := range cases {

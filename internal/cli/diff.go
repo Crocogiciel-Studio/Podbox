@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"strconv"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -17,6 +20,9 @@ type diffResult struct {
 	Base  string               `json:"base"`
 	Files []sandbox.FileChange `json:"files"`
 	Patch *string              `json:"patch,omitempty"`
+	// Ignored counts ignored paths not listed in Files.
+	Ignored       int  `json:"ignored"`
+	IgnoredCapped bool `json:"ignored_capped,omitempty"`
 }
 
 func (a *app) diffCmd() *cobra.Command {
@@ -30,6 +36,9 @@ func (a *app) diffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if v, err := strconv.Atoi(os.Getenv("PODBOX_DIFF_TIMEOUT")); err == nil && v > 0 { // test knob
+				m.GitTimeout = time.Duration(v) * time.Second
+			}
 			d, err := m.Diff(cmd.Context(), args[0], !stat)
 			if errors.Is(err, sandbox.ErrTooLarge) {
 				err = fmt.Errorf("%w (nothing printed; list the files only with: podbox diff %s --stat)", err, args[0])
@@ -37,7 +46,7 @@ func (a *app) diffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res := diffResult{Name: args[0], Base: d.Base, Files: d.Files}
+			res := diffResult{Name: args[0], Base: d.Base, Files: d.Files, Ignored: d.Ignored, IgnoredCapped: d.IgnoredCapped}
 			if !stat {
 				res.Patch = &d.Patch
 			}
@@ -48,32 +57,42 @@ func (a *app) diffCmd() *cobra.Command {
 	return cmd
 }
 
-// writeDiff prints the file summary, a total, then the patch. Everything in
-// res has already been through termsafe.
+// writeDiff prints the file summary, a total, the count of ignored paths,
+// then the patch. Everything in res has already been through termsafe.
 func writeDiff(w io.Writer, res diffResult) {
 	if len(res.Files) == 0 {
 		fmt.Fprintf(w, "no changes since %s\n", short(res.Base))
-		return
+	} else {
+		tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "STATUS\tADDED\tDELETED\tPATH")
+		added, deleted := 0, 0
+		for _, f := range res.Files {
+			st, a, d, p := f.Status, fmt.Sprint(f.Added), fmt.Sprint(f.Deleted), f.Path
+			if f.Untracked {
+				st = "untracked"
+			}
+			if f.Binary {
+				a, d = "-", "-"
+			}
+			if f.OldPath != "" {
+				p = f.OldPath + " -> " + f.Path
+			}
+			if f.Gitlink {
+				p += " [nested repository: only its commit is compared]"
+			}
+			added, deleted = added+f.Added, deleted+f.Deleted
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", st, a, d, p)
+		}
+		tw.Flush()
+		fmt.Fprintf(w, "%d file(s) changed, +%d -%d since %s\n", len(res.Files), added, deleted, short(res.Base))
 	}
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "STATUS\tADDED\tDELETED\tPATH")
-	added, deleted := 0, 0
-	for _, f := range res.Files {
-		st, a, d, p := f.Status, fmt.Sprint(f.Added), fmt.Sprint(f.Deleted), f.Path
-		if f.Untracked {
-			st = "untracked"
+	if res.Ignored > 0 {
+		more := ""
+		if res.IgnoredCapped {
+			more = " or more"
 		}
-		if f.Binary {
-			a, d = "-", "-"
-		}
-		if f.OldPath != "" {
-			p = f.OldPath + " -> " + f.Path
-		}
-		added, deleted = added+f.Added, deleted+f.Deleted
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", st, a, d, p)
+		fmt.Fprintf(w, "%d%s ignored path(s) not shown (git ignores them, so the agent can keep files there)\n", res.Ignored, more)
 	}
-	tw.Flush()
-	fmt.Fprintf(w, "%d file(s) changed, +%d -%d since %s\n", len(res.Files), added, deleted, short(res.Base))
 	if res.Patch != nil && *res.Patch != "" {
 		fmt.Fprintf(w, "\n%s", *res.Patch)
 	}
