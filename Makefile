@@ -42,6 +42,7 @@ e2e: build
 	PODBOX=$(CURDIR)/bin/podbox test/e2e/lifecycle.sh
 	PODBOX=$(CURDIR)/bin/podbox test/e2e/agentctx.sh
 	PODBOX=$(CURDIR)/bin/podbox test/e2e/clone.sh
+	PODBOX=$(CURDIR)/bin/podbox test/e2e/clonediff.sh
 
 clean:
 	rm -rf bin dist $(EMBED_DIR)

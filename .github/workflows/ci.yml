@@ -48,3 +48,5 @@ jobs:
         run: PODBOX=$PWD/bin/podbox test/e2e/agentctx.sh
       - name: Clone suite
         run: PODBOX=$PWD/bin/podbox test/e2e/clone.sh
+      - name: Clone diff suite
+        run: PODBOX=$PWD/bin/podbox test/e2e/clonediff.sh
