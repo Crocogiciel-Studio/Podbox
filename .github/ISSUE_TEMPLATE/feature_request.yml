@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like podbox to do?
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Does it touch the security model?
+      description: Network policy, masks, git protections, what the agent can read or write. If yes, say what it would loosen or tighten.

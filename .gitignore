@@ -3,3 +3,8 @@
 /internal/images/bin/
 *.test
 *.out
+
+# local secrets and scratch
+.env
+.env.*
+!.env.example

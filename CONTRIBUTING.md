@@ -10,6 +10,10 @@ make e2e         # Linux with rootless Podman: evasion, lifecycle, agent context
 
 `make e2e` needs rootless Podman 4.4+ (`podbox doctor` must report no failure).
 
+## Reporting problems
+
+Bugs and ideas go in issues (templates provided). A way for an agent to leave the sandbox or bypass its policy is a security issue: report it privately as described in [SECURITY.md](SECURITY.md). By taking part you agree to the [code of conduct](CODE_OF_CONDUCT.md).
+
 ## Conventions
 
 - Go standard library first; dependencies are limited to cobra, yaml.v3 and a gitignore matcher.

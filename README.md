@@ -1,5 +1,7 @@
 # podbox
 
+[![ci](https://github.com/Crocogiciel-Studio/Podbox/actions/workflows/ci.yml/badge.svg)](https://github.com/Crocogiciel-Studio/Podbox/actions/workflows/ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 Run coding agents (Claude Code, Kiro) autonomously in a hardened rootless Podman sandbox whose only network egress is an allowlisting proxy.
 
 - The agent container has no route out, no DNS, and no access to the host or its loopback services; its only exit is the sandbox proxy.
@@ -176,6 +178,10 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 - The agent context tells Claude and Kiro that they are sandboxed and what to ask the human; it informs and enforces nothing, the proxy and the container do. It is verified by the e2e suite, not against a live Claude or Kiro session.
 - Clone mode: a podbox older than this release does not know the mode and would treat a clone sandbox as a shared one, mounting your project directory: remove clone sandboxes before downgrading. Clone mode on Windows (the `file://` URL of a drive path) is designed for but untested. A repository's submodules and LFS files are only what a plain `git clone` gives; each clone is a full copy of the repository's history on disk; a masked tracked file is empty in the clone, so a commit by the agent can record it as emptied; there is no way back to the host yet in this release.
 - macOS and Windows are designed for but not tested in CI.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md). To report a vulnerability, follow [SECURITY.md](SECURITY.md): please do not file it as a public issue.
 
 ## License
 
