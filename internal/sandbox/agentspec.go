@@ -16,6 +16,7 @@ const (
 	LabelWorkspace = "io.podbox.workspace"
 	LabelHome      = "io.podbox.home"
 	LabelShared    = "io.podbox.shared"
+	LabelMode      = "io.podbox.mode"
 )
 
 // AgentUser is the uid:gid of the agent inside the container.
@@ -23,6 +24,9 @@ const AgentUser = "1000:1000"
 
 // policyMount is where the proxy reads the sandbox state directory.
 const policyMount = "/etc/podbox"
+
+// agentMount is where the agent reads its policy view.
+const agentMount = "/run/podbox"
 
 func agentContainer(name string) string { return "podbox-" + name + "-agent" }
 func proxyContainer(name string) string { return "podbox-" + name + "-proxy" }
@@ -40,7 +44,7 @@ func WorkspaceTarget(goos, hostPath string) string {
 }
 
 func labels(m Meta, role string) map[string]string {
-	return map[string]string{LabelSandbox: m.Name, LabelRole: role, LabelAgent: m.Agent, LabelWorkspace: m.Workspace}
+	return map[string]string{LabelSandbox: m.Name, LabelRole: role, LabelAgent: m.Agent, LabelWorkspace: m.Workspace, LabelMode: m.ModeName()}
 }
 
 // proxySpec is the per-sandbox proxy: egress + internal networks, policy
@@ -65,12 +69,14 @@ func proxySpec(m Meta, image, stateDir, ip, upstream string, selinux bool) runti
 
 type agentInput struct {
 	Meta     Meta
+	Source   string // host directory mounted at the project path; Meta.Workspace when empty
 	Image    string
 	ProxyIP  string
 	ReadOnly []string // workspace paths the agent may read but not edit
 	GitDir   bool     // .git is a directory: bind it on itself so it cannot be renamed
 	Masks    []workspace.Mask
 	EmptyDir string
+	AgentDir string // the agent's read-only view of podbox state
 	Limits   *runtime.Limits
 	SELinux  bool
 	GOOS     string
@@ -80,19 +86,24 @@ type agentInput struct {
 // DNS, no inherited proxy variables, non-root, no capabilities.
 func agentSpec(in agentInput) runtime.ContainerSpec {
 	m := in.Meta
+	src := in.Source
+	if src == "" {
+		src = m.Workspace
+	}
 	target := WorkspaceTarget(in.GOOS, m.Workspace)
 	proxyURL := "http://proxy:" + ProxyPort
 	mounts := []runtime.Mount{
-		{Type: runtime.Bind, Source: m.Workspace, Target: target, Relabel: in.SELinux},
+		{Type: runtime.Bind, Source: src, Target: target, Relabel: in.SELinux},
 		{Type: runtime.Volume, Source: HomeVolume(m.Agent), Target: "/home/agent"},
 		{Type: runtime.Tmpfs, Target: "/tmp", Options: "rw,nosuid,nodev,size=1g"},
+		{Type: runtime.Bind, Source: in.AgentDir, Target: agentMount, ReadOnly: true, Relabel: in.SELinux},
 	}
 	if in.GitDir {
-		mounts = append(mounts, runtime.Mount{Type: runtime.Bind, Source: filepath.Join(m.Workspace, ".git"), Target: path.Join(target, ".git"), Relabel: in.SELinux})
+		mounts = append(mounts, runtime.Mount{Type: runtime.Bind, Source: filepath.Join(src, ".git"), Target: path.Join(target, ".git"), Relabel: in.SELinux})
 	}
 	for _, rel := range in.ReadOnly {
 		p := path.Join(target, rel)
-		mounts = append(mounts, runtime.Mount{Type: runtime.Bind, Source: filepath.Join(m.Workspace, rel), Target: p, ReadOnly: true, Relabel: in.SELinux})
+		mounts = append(mounts, runtime.Mount{Type: runtime.Bind, Source: filepath.Join(src, rel), Target: p, ReadOnly: true, Relabel: in.SELinux})
 	}
 	for _, mk := range in.Masks {
 		dst := path.Join(target, mk.Rel)

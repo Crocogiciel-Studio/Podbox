@@ -2,13 +2,17 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/hostgit"
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
@@ -27,11 +31,26 @@ func Execute() int {
 	return run(os.Args[1:])
 }
 
+// interruptContext is cancelled by the first SIGINT or SIGTERM, so a command's
+// cleanup (temporary files and refs) runs. The handler is removed at that
+// point: a second signal takes its default effect and kills a command that
+// ignores its context (exec, attach, a blocking read).
+func interruptContext() (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
+}
+
 func run(args []string) int {
 	a := &app{out: &output.Printer{Mode: output.Text, Out: os.Stdout, Err: os.Stderr}}
 	root := a.newRoot()
 	root.SetArgs(args)
-	err := root.Execute()
+	ctx, stop := interruptContext()
+	defer stop()
+	err := root.ExecuteContext(ctx)
 	if err == nil {
 		return output.ExitOK
 	}
@@ -63,6 +82,14 @@ func classify(err error, started bool) error {
 		code = output.ExitMasks
 	case errors.Is(err, workspace.ErrUnsafe), errors.Is(err, policy.ErrInvalid), errors.Is(err, sandbox.ErrBadWorkspace):
 		code = output.ExitUsage
+	case errors.Is(err, hostgit.ErrMissing), errors.Is(err, hostgit.ErrTooOld):
+		code = output.ExitPrereq
+	case errors.Is(err, hostgit.ErrNotRepo), errors.Is(err, hostgit.ErrNotTopLevel), errors.Is(err, hostgit.ErrEmptyRepo):
+		code = output.ExitUsage
+	case errors.Is(err, sandbox.ErrNotClone), errors.Is(err, sandbox.ErrBadExport):
+		code = output.ExitUsage
+	case errors.Is(err, sandbox.ErrCloneExists), errors.Is(err, sandbox.ErrModeMismatch):
+		code = output.ExitGeneric
 	case errors.As(err, &cmdErr), errors.As(err, &pathErr), errors.As(err, &linkErr), errors.As(err, &sysErr):
 		code = output.ExitRuntime // podman or a host file operation failed
 	}
@@ -89,7 +116,7 @@ func (a *app) newRoot() *cobra.Command {
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return &output.Error{Code: output.ExitUsage, Err: err}
 	})
-	root.AddCommand(a.runCmd(), a.createCmd(), a.lsCmd(), a.execCmd(), a.attachCmd(), a.policyCmd(), a.imageCmd(), a.doctorCmd(), a.versionCmd(), a.proxyCmd())
+	root.AddCommand(a.runCmd(), a.createCmd(), a.lsCmd(), a.execCmd(), a.attachCmd(), a.diffCmd(), a.exportCmd(), a.policyCmd(), a.imageCmd(), a.doctorCmd(), a.versionCmd(), a.proxyCmd())
 	root.AddCommand(a.lifecycleCmds()...)
 	return root
 }

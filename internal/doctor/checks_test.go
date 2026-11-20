@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/hostgit"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 )
 
@@ -53,6 +54,35 @@ func TestHealthy(t *testing.T) {
 	for _, c := range cs {
 		if c.Status != OK {
 			t.Errorf("%s: %s", c.Name, c.Status)
+		}
+	}
+}
+
+func TestGitIsOptional(t *testing.T) {
+	cases := []struct {
+		name   string
+		locate func() (string, string, error)
+		want   string
+	}{
+		{"present", func() (string, string, error) { return "/usr/bin/git", "2.45.0", nil }, OK},
+		{"missing", func() (string, string, error) { return "", "", hostgit.ErrMissing }, Warn},
+		{"too old", func() (string, string, error) { return "/usr/bin/git", "2.20.1", hostgit.ErrTooOld }, Warn},
+	}
+	for _, c := range cases {
+		e, _ := healthy()
+		e.LocateGit = c.locate
+		cs := Run(context.Background(), e)
+		if got := find(t, cs, "git"); got.Status != c.want {
+			t.Errorf("%s: git is %s, want %s", c.name, got.Status, c.want)
+		}
+		if Failed(cs) {
+			t.Errorf("%s: git alone must not fail doctor: %+v", c.name, cs)
+		}
+	}
+	e, _ := healthy()
+	for _, c := range Run(context.Background(), e) {
+		if c.Name == "git" {
+			t.Error("git check runs without LocateGit")
 		}
 	}
 }

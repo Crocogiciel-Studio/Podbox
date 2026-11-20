@@ -81,6 +81,30 @@ func Matcher(ignore []byte) func(rel string, dir bool) bool {
 	}
 }
 
+// MatcherFold is Matcher for a file system that ignores case: the patterns
+// (the forced ones and the .sandboxignore content) and the path are lower-cased
+// before matching, so "Secrets/" masks "SECRETS/x". It over-matches by design.
+// Unicode normalisation (NFC and NFD forms of one name) and NTFS trailing dots,
+// spaces and short names are not handled.
+func MatcherFold(ignore []byte) func(rel string, dir bool) bool {
+	fold := func(lines []string) []string {
+		out := make([]string, len(lines))
+		for i, l := range lines {
+			out[i] = strings.ToLower(l)
+		}
+		return out
+	}
+	forced := gitignore.CompileIgnoreLines(fold(Forced)...)
+	user := gitignore.CompileIgnoreLines(fold(strings.Split(string(ignore), "\n"))...)
+	return func(rel string, dir bool) bool {
+		rel = strings.ToLower(rel)
+		if dir {
+			rel += "/"
+		}
+		return forced.MatchesPath(rel) || user.MatchesPath(rel)
+	}
+}
+
 type fileKey struct{ dev, ino uint64 }
 
 // ErrMasks marks a mask set podbox cannot trust: a workspace path it could

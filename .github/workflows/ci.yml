@@ -44,3 +44,11 @@ jobs:
           E2E_EXTRA_HOST: example.org
       - name: Lifecycle suite
         run: PODBOX=$PWD/bin/podbox test/e2e/lifecycle.sh
+      - name: Agent context suite
+        run: PODBOX=$PWD/bin/podbox test/e2e/agentctx.sh
+      - name: Clone suite
+        run: PODBOX=$PWD/bin/podbox test/e2e/clone.sh
+      - name: Clone diff suite
+        run: PODBOX=$PWD/bin/podbox test/e2e/clonediff.sh
+      - name: Clone export suite
+        run: PODBOX=$PWD/bin/podbox test/e2e/cloneexport.sh

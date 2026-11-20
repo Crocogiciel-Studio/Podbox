@@ -106,7 +106,7 @@ func TestSnapshotRefusesSymlinks(t *testing.T) {
 	if allows(t, st, m, "evil.test") {
 		t.Fatal("symlinked policy applied")
 	}
-	if ro := readOnlyProject(root(t, ws)); len(ro) != 0 {
+	if ro := readOnlyProject(root(t, ws), gitguard.Guard{}); len(ro) != 0 {
 		t.Fatalf("symlink mounted read-only: %v", ro)
 	}
 }
@@ -114,7 +114,7 @@ func TestSnapshotRefusesSymlinks(t *testing.T) {
 func TestAgentSpecReadOnlyProjectFiles(t *testing.T) {
 	ws := t.TempDir()
 	write(t, filepath.Join(ws, ".sandboxignore"), "x\n")
-	ro := readOnlyProject(root(t, ws))
+	ro := readOnlyProject(root(t, ws), gitguard.Guard{})
 	if !reflect.DeepEqual(ro, []string{".sandboxignore"}) {
 		t.Fatalf("read-only paths %v (absent .podbox must not be created or mounted)", ro)
 	}
@@ -133,7 +133,7 @@ func TestAgentSpecReadOnlyProjectFiles(t *testing.T) {
 func TestGitConfigReadOnly(t *testing.T) {
 	repo := t.TempDir()
 	write(t, filepath.Join(repo, ".git", "config"), "[core]\n")
-	if ro := readOnlyProject(root(t, repo)); !reflect.DeepEqual(ro, []string{".git/config"}) || gitguard.IsPointer(root(t, repo)) {
+	if ro := readOnlyProject(root(t, repo), gitguard.Guard{}); !reflect.DeepEqual(ro, []string{".git/config"}) || gitguard.IsPointer(root(t, repo)) {
 		t.Fatalf("git dir: read-only %v, pointer %v", ro, gitguard.IsPointer(root(t, repo)))
 	}
 	if !gitguard.HasDir(root(t, repo)) {
@@ -149,7 +149,7 @@ func TestGitConfigReadOnly(t *testing.T) {
 
 	worktree := t.TempDir()
 	write(t, filepath.Join(worktree, ".git"), "gitdir: "+filepath.Join(repo, ".git")+"\n")
-	if ro := readOnlyProject(root(t, worktree)); len(ro) != 0 || !gitguard.IsPointer(root(t, worktree)) || gitguard.HasDir(root(t, worktree)) {
+	if ro := readOnlyProject(root(t, worktree), gitguard.Guard{}); len(ro) != 0 || !gitguard.IsPointer(root(t, worktree)) || gitguard.HasDir(root(t, worktree)) {
 		t.Fatalf("git file: read-only %v, pointer %v", ro, gitguard.IsPointer(root(t, worktree)))
 	}
 
@@ -157,7 +157,7 @@ func TestGitConfigReadOnly(t *testing.T) {
 	if err := os.Symlink(filepath.Join(repo, ".git"), filepath.Join(linked, ".git")); err != nil {
 		t.Fatal(err)
 	}
-	if ro := readOnlyProject(root(t, linked)); len(ro) != 0 || gitguard.HasDir(root(t, linked)) {
+	if ro := readOnlyProject(root(t, linked), gitguard.Guard{}); len(ro) != 0 || gitguard.HasDir(root(t, linked)) {
 		t.Fatalf("symlinked .git mounted: %v", ro)
 	}
 }
@@ -165,7 +165,7 @@ func TestGitConfigReadOnly(t *testing.T) {
 func TestGitHooksReadOnly(t *testing.T) {
 	repo := t.TempDir()
 	write(t, filepath.Join(repo, ".git", "config"), "[core]\n")
-	if ro := readOnlyProject(root(t, repo)); !reflect.DeepEqual(ro, []string{".git/config"}) {
+	if ro := readOnlyProject(root(t, repo), gitguard.Guard{}); !reflect.DeepEqual(ro, []string{".git/config"}) {
 		t.Fatalf("absent hooks mounted: %v", ro)
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".git", "hooks")); err == nil {
@@ -176,7 +176,7 @@ func TestGitHooksReadOnly(t *testing.T) {
 		write(t, filepath.Join(repo, ".git", f), "x\n")
 	}
 	want := []string{".git/config", ".git/hooks", ".git/modules/lib/foo/hooks", ".git/modules/sub/hooks", ".git/modules/sub/modules/inner/hooks"}
-	if ro := readOnlyProject(root(t, repo)); !reflect.DeepEqual(ro, want) {
+	if ro := readOnlyProject(root(t, repo), gitguard.Guard{}); !reflect.DeepEqual(ro, want) {
 		t.Fatalf("read-only %v, want %v", ro, want)
 	}
 	res, err := workspace.Resolve(repo, nil, nil)

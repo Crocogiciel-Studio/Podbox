@@ -14,6 +14,9 @@ type gitCheckResult struct {
 	Name         string              `json:"name"`
 	Accepted     bool                `json:"accepted,omitempty"`
 	GitIntegrity *gitguard.Integrity `json:"git_integrity"`
+	// Applicable is false for a clone sandbox: its git directory is the
+	// agent's own, not one the host's git trusts.
+	Applicable bool `json:"applicable"`
 }
 
 func (a *app) gitCheckCmd() *cobra.Command {
@@ -31,6 +34,10 @@ func (a *app) gitCheckCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if !meta.Guard().Active() {
+				return a.out.Print(gitCheckResult{Name: meta.Name, GitIntegrity: nil, Applicable: false},
+					func(w io.Writer) { fmt.Fprintf(w, "%s: git-check does not apply to a clone sandbox\n", meta.Name) })
+			}
 			if accept || !m.Store.HasGitPrint(meta.Name) { // never recorded: nothing to compare yet
 				if err := m.Store.RecordGit(meta); err != nil {
 					return err
@@ -43,7 +50,7 @@ func (a *app) gitCheckCmd() *cobra.Command {
 			if !g.OK {
 				a.out.Warn("%s", gitguard.Warning(meta.Workspace, *g, meta.Name))
 			}
-			err = a.out.Print(gitCheckResult{meta.Name, accept, g}, func(w io.Writer) {
+			err = a.out.Print(gitCheckResult{meta.Name, accept, g, true}, func(w io.Writer) {
 				switch {
 				case accept:
 					fmt.Fprintf(w, "%s: .git fingerprint re-recorded\n", meta.Name)

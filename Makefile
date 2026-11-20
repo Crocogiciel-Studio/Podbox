@@ -40,6 +40,10 @@ cross-embed:
 e2e: build
 	PODBOX=$(CURDIR)/bin/podbox test/e2e/evasion.sh
 	PODBOX=$(CURDIR)/bin/podbox test/e2e/lifecycle.sh
+	PODBOX=$(CURDIR)/bin/podbox test/e2e/agentctx.sh
+	PODBOX=$(CURDIR)/bin/podbox test/e2e/clone.sh
+	PODBOX=$(CURDIR)/bin/podbox test/e2e/clonediff.sh
+	PODBOX=$(CURDIR)/bin/podbox test/e2e/cloneexport.sh
 
 clean:
 	rm -rf bin dist $(EMBED_DIR)

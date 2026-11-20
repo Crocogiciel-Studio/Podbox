@@ -19,7 +19,10 @@ import (
 
 // The agent can write the workspace, so podbox never reads the project's
 // policy or ignore file live: it snapshots them into the state directory at
-// creation and on an explicit `podbox policy reload`.
+// creation and on an explicit `podbox policy reload`. They are always read
+// from the host project (Meta.Workspace), also for a clone sandbox, whose
+// copies the agent can rewrite: only the tree masks are resolved against is
+// the one mounted (Store.Source).
 
 // ProjectPolicyRel is the project policy file inside the workspace.
 const ProjectPolicyRel = ".podbox/policy.yaml"
@@ -198,11 +201,11 @@ func (s Store) Reload(m Meta, forgetMissing bool) (Changes, policy.Effective, er
 	if err != nil {
 		return c, policy.Effective{}, err
 	}
-	res, err := workspace.Resolve(m.Workspace, ignore, ts)
+	res, err := workspace.Resolve(s.Source(m), ignore, ts)
 	if err != nil {
 		return c, policy.Effective{}, err
 	}
-	kept, dropped, err := workspace.Shrink(m.Workspace, res, ignore, forgetMissing)
+	kept, dropped, err := workspace.Shrink(s.Source(m), res, ignore, forgetMissing)
 	if err != nil {
 		return c, policy.Effective{}, err
 	}
@@ -220,7 +223,7 @@ func (s Store) Reload(m Meta, forgetMissing bool) (Changes, policy.Effective, er
 	if err := s.saveMasks(m.Name, kept); err != nil {
 		return c, e, err
 	}
-	return c, e, policy.WriteEffective(s.EffectivePath(m.Name), e)
+	return c, e, s.writeEffective(m, e)
 }
 
 // compileWith compiles the policy with the given project rules in place of
@@ -329,16 +332,16 @@ func diff(a, b []string) (added, removed []string) {
 }
 
 // readOnlyProject lists the existing project paths to mount read-only in the
-// agent, then the git ones (see gitguard.ReadOnly); symlinks are skipped so
+// agent, then the git ones the Guard asks for; symlinks are skipped so
 // nothing outside the workspace is exposed.
-func readOnlyProject(r *os.Root) []string {
+func readOnlyProject(r *os.Root, g gitguard.Guard) []string {
 	var out []string
 	for _, rel := range projectDirs {
 		if fi, err := workspace.Lstat(r, rel); err == nil && fi.Mode()&fs.ModeSymlink == 0 {
 			out = append(out, rel)
 		}
 	}
-	return append(out, gitguard.ReadOnly(r)...)
+	return append(out, g.ReadOnly(r)...)
 }
 
 // checkMounts re-validates, right before the container is created, every

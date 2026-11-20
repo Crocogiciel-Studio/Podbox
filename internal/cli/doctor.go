@@ -13,6 +13,7 @@ import (
 
 	"github.com/Crocogiciel-Studio/podbox/internal/config"
 	"github.com/Crocogiciel-Studio/podbox/internal/doctor"
+	"github.com/Crocogiciel-Studio/podbox/internal/hostgit"
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 )
@@ -65,6 +66,7 @@ func hostEnv(base string, pull bool) doctor.Env {
 		Stat:            os.Stat,
 		LimitsDelegated: runtime.LimitsDelegated,
 		BaseImage:       base,
+		LocateGit:       hostgit.Available,
 	}
 	if p, err := runtime.NewPodman(); err == nil {
 		e.ImageExists = p.ImageExists

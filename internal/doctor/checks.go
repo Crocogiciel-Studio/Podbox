@@ -3,11 +3,13 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/hostgit"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
 )
 
@@ -41,6 +43,9 @@ type Env struct {
 	BaseImage   string
 	ImageExists func(context.Context, string) (bool, error)
 	Pull        func(context.Context, string) error
+	// LocateGit reports git and its version; nil skips the git check.
+	// git is optional: only --clone and export need it.
+	LocateGit func() (path, version string, err error)
 }
 
 const minMajor, minMinor = 4, 4
@@ -126,7 +131,24 @@ func Run(ctx context.Context, e Env) []Check {
 		add("storage", Warn, info.StorageDriver+" storage driver: slow image builds and high disk usage",
 			"make /dev/fuse available or install fuse-overlayfs, then podman system reset")
 	}
+	gitCheck(e, add)
 	return cs
+}
+
+// gitCheck reports git, needed only by --clone and export: never a failure.
+func gitCheck(e Env, add func(name, status, detail, fix string)) {
+	if e.LocateGit == nil {
+		return
+	}
+	path, version, err := e.LocateGit()
+	switch {
+	case err == nil:
+		add("git", OK, path+" "+version, "")
+	case errors.Is(err, hostgit.ErrTooOld):
+		add("git", Warn, "git "+version+" is older than 2.29: --clone and export are unavailable", "upgrade git to 2.29 or newer")
+	default:
+		add("git", Warn, "git not found: --clone and export are unavailable", "install git 2.29 or newer: https://git-scm.com/downloads")
+	}
 }
 
 const baseFix = "set images.base in the podbox config.yaml to an image your registry serves, " +

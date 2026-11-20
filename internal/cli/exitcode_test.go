@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Crocogiciel-Studio/podbox/internal/hostgit"
 	"github.com/Crocogiciel-Studio/podbox/internal/output"
 	"github.com/Crocogiciel-Studio/podbox/internal/policy"
 	"github.com/Crocogiciel-Studio/podbox/internal/runtime"
@@ -55,6 +56,22 @@ func TestExitCodes(t *testing.T) {
 		{"git-check findings", output.ExitStatus(output.ExitGitIntegrity), output.ExitGitIntegrity},
 		{"unreadable workspace", unreadable, output.ExitMasks},
 		{"missing masked path", workspace.MissingError("s", []string{"a.key"}), output.ExitMasks},
+		{"git missing", hostgit.ErrMissing, output.ExitPrereq},
+		{"git too old", fmt.Errorf("%w (found 2.20.0)", hostgit.ErrTooOld), output.ExitPrereq},
+		{"not a repository", fmt.Errorf("%w: /x", hostgit.ErrNotRepo), output.ExitUsage},
+		{"not the top level", fmt.Errorf("%w: /x/y", hostgit.ErrNotTopLevel), output.ExitUsage},
+		{"empty repository", fmt.Errorf("%w: /x", hostgit.ErrEmptyRepo), output.ExitUsage},
+		{"clone exists", fmt.Errorf("%w for s", sandbox.ErrCloneExists), output.ExitGeneric},
+		{"not a clone sandbox", fmt.Errorf("%w: s", sandbox.ErrNotClone), output.ExitUsage},
+		{"invalid export options", fmt.Errorf("%w: --as", sandbox.ErrBadExport), output.ExitUsage},
+		{"branch exists", fmt.Errorf("%w: x", hostgit.ErrRefExists), output.ExitGeneric},
+		{"masked paths", fmt.Errorf("%w: .env", sandbox.ErrMaskedTouched), output.ExitGeneric},
+		{"history rewritten", fmt.Errorf("%w", sandbox.ErrHistory), output.ExitGeneric},
+		{"patch file exists", fmt.Errorf("%w: x", sandbox.ErrFileExists), output.ExitGeneric},
+		{"bad bundle", fmt.Errorf("%w: x", hostgit.ErrBadBundle), output.ExitGeneric},
+		{"output too large", fmt.Errorf("%w: s", sandbox.ErrTooLarge), output.ExitGeneric},
+		{"git timed out", fmt.Errorf("%w after 120s", sandbox.ErrTimeout), output.ExitGeneric},
+		{"mode mismatch", fmt.Errorf("%w: s", sandbox.ErrModeMismatch), output.ExitGeneric},
 	}
 	for _, c := range cases {
 		if c.err == nil {
@@ -81,6 +98,14 @@ func TestCommandExitCodes(t *testing.T) {
 	}{
 		{[]string{"run", "nosuchagent", t.TempDir()}, output.ExitUsage},
 		{[]string{"policy", "show", "nosuch"}, output.ExitNotFound},
+		{[]string{"diff"}, output.ExitUsage},
+		{[]string{"diff", "s", "--stat", "--show-binary"}, output.ExitUsage},
+		{[]string{"export"}, output.ExitUsage},
+		{[]string{"export", "s"}, output.ExitUsage},
+		{[]string{"export", "s", "--as", "zip"}, output.ExitUsage},
+		{[]string{"export", "s", "--as", "patch", "--branch-name", "x"}, output.ExitUsage},
+		{[]string{"export", "s", "--as", "branch", "--out", "x"}, output.ExitUsage},
+		{[]string{"export", "nosuch", "--as", "branch"}, output.ExitNotFound},
 		{[]string{"policy", "allow", "nosuch", "example.com"}, output.ExitNotFound},
 		{[]string{"policy", "allow", "s", "a*b"}, output.ExitUsage},
 		{[]string{"policy", "allow", "s", "example.com", "--scope", "nowhere"}, output.ExitUsage},

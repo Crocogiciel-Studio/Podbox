@@ -16,10 +16,14 @@ import (
 	"github.com/Crocogiciel-Studio/podbox/internal/workspace"
 )
 
-type createFlags struct{ name string }
+type createFlags struct {
+	name  string
+	clone bool
+}
 
 func (f *createFlags) bind(c *cobra.Command) {
 	c.Flags().StringVar(&f.name, "name", "", "sandbox name (default <agent>-<directory>)")
+	c.Flags().BoolVar(&f.clone, "clone", false, "work on the agent's own git clone of the committed HEAD instead of the project directory (needs git; fixed at creation)")
 }
 
 // target validates the agent, workspace and name from arguments.
@@ -59,12 +63,13 @@ func (a *app) createCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, imp, err := m.Create(cmd.Context(), name, agent, ws)
+			_, imp, report, err := m.Create(cmd.Context(), name, agent, ws, sandbox.CreateOptions{Clone: f.clone})
 			if err != nil {
 				return err
 			}
 			a.printImported(name, imp)
-			return a.out.Print(actionResult{Name: name, Action: "created", Info: a.hookNotice(m, name), Imported: &imp},
+			a.printClone(name, report)
+			return a.out.Print(actionResult{Name: name, Action: "created", Info: a.hookNotice(m, name), Imported: &imp, Clone: report},
 				func(w io.Writer) { fmt.Fprintf(w, "%s created\n", name) })
 		},
 	}
@@ -87,7 +92,7 @@ func (a *app) runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := a.ensureSandbox(cmd.Context(), m, name, agent, ws); err != nil {
+			if err := a.ensureSandbox(cmd.Context(), m, name, agent, ws, f.clone); err != nil {
 				return err
 			}
 			if err := m.Start(cmd.Context(), name); err != nil {
@@ -116,19 +121,41 @@ func (a *app) printImported(name string, imp sandbox.Imported) {
 	}
 }
 
-func (a *app) ensureSandbox(ctx context.Context, m *sandbox.Manager, name, agent, ws string) error {
+// printClone tells what a new clone holds and what it leaves out.
+func (a *app) printClone(name string, r *sandbox.CloneReport) {
+	if r == nil {
+		return
+	}
+	a.out.Info("%s: clone of commit %s at %s", name, short(r.Base), r.Path)
+	a.out.Info("%s: %d uncommitted and %d untracked file(s) are not in the clone", name, r.Uncommitted, r.Untracked)
+}
+
+func short(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+func (a *app) ensureSandbox(ctx context.Context, m *sandbox.Manager, name, agent, ws string, clone bool) error {
 	meta, err := m.Store.Load(name)
 	switch {
 	case errors.Is(err, sandbox.ErrNotFound):
 		var imp sandbox.Imported
-		if _, imp, err = m.Create(ctx, name, agent, ws); err == nil {
+		var report *sandbox.CloneReport
+		if _, imp, report, err = m.Create(ctx, name, agent, ws, sandbox.CreateOptions{Clone: clone}); err == nil {
 			a.printImported(name, imp)
+			a.printClone(name, report)
 		}
 		return err
 	case err != nil:
 		return err
 	case meta.Agent != agent || meta.Workspace != ws:
 		return output.Errorf(output.ExitGeneric, "sandbox %s already exists for %s on %s; pick another --name", name, meta.Agent, meta.Workspace)
+	case clone && !meta.IsClone():
+		return fmt.Errorf("%w: %s is a shared sandbox and the mode is fixed at creation; pick another --name to create a clone sandbox", sandbox.ErrModeMismatch, name)
+	case meta.IsClone() && !clone:
+		a.out.Info("%s is a clone sandbox: attaching to its clone", name)
 	}
 	return nil
 }
