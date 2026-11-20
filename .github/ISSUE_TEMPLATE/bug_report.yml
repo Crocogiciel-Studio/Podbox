@@ -1,0 +1,41 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If the bug lets an agent escape the sandbox or bypass the policy, **do not file it here**: use "Report a vulnerability" in the Security tab instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The commands you ran, with `--output json` if it helps.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`podbox version` and `podbox doctor`"
+      description: Paste both. Remove anything private (host names, paths) first.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Host OS
+      options: [Linux, macOS, Windows]
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Workspace mode
+      options: [shared (default), "--clone", not applicable]

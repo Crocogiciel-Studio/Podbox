@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/Crocogiciel-Studio/Podbox/security/advisories/new
+    about: Sandbox escape, policy bypass, secret exposure. Do not open a public issue for these.
