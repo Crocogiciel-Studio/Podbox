@@ -30,7 +30,25 @@ podbox run claude          # builds images on first use, then opens Claude Code
 
 `run` creates the sandbox `claude-my-project` if needed, starts it and opens `claude --dangerously-skip-permissions` in the project directory. Log in once; the next `run` reuses the session.
 
-Other agents: `podbox run kiro` (experimental, unverified), `podbox run shell` (bash, for inspection).
+Other agents: `podbox run kiro` (experimental, see [Kiro login](#kiro-login)), `podbox run shell` (bash, for inspection).
+
+### Kiro login
+
+Log in once with `podbox auth login`, then `podbox run kiro`. kiro-cli's sign-in is a browser flow whose last step is a redirect to `http://localhost:<port>` on the machine running kiro-cli, which is the sandbox; `podbox auth login` bridges it. It was checked with an organization that signs in through Microsoft Entra ID; the other methods of the same portal (Builder ID, Google, GitHub, Okta) are not verified:
+
+```sh
+podbox create kiro ~/code/my-project && podbox start kiro-my-project
+podbox auth login kiro-my-project    # runs kiro-cli login in the sandbox
+podbox run kiro ~/code/my-project
+```
+
+Builder ID and IAM Identity Center also have a device code, which needs no relay: `podbox auth login kiro-my-project -- kiro-cli login --use-device-flow`.
+
+1. Open each URL it prints in your browser. podbox never opens it for you: the URL comes from the sandbox.
+2. Sign in. While the login runs, podbox listens on `127.0.0.1` and `[::1]` on the login's callback port and replays the browser's callback into the sandbox (through `podman exec`, no published port), then sends the browser where kiro-cli answered.
+3. When the portal names your identity provider and the sandbox may not reach it, podbox holds the callback and prints the command to run, for example `podbox policy allow kiro-my-project login.microsoftonline.com`; run it and reload the browser page.
+
+The login is kept in the agent home volume, like any agent login, and the agent can read it; `podbox rm <name> --volumes` drops it. The Kiro image pins kiro-cli (3.5.0) with a checksum and sets `DISPLAY` and `BROWSER` so kiro-cli takes the browser flow; `xdg-open` in every podbox image prints and records URLs instead of starting a browser.
 
 When the agent hits a host outside the allowlist over plain HTTP it receives:
 
@@ -67,6 +85,7 @@ podbox policy show claude-my-project
 | `git-check <name> [--accept]` | compare `.git` with the fingerprint taken at creation, exit 6 on suspicious changes; `--accept` re-records it; says it does not apply (exit 0) to a clone sandbox |
 | `policy show\|allow\|deny\|reload <name> [host]` | inspect and change the allowlist from the host; `reload --forget-missing` also drops recorded masks found nowhere |
 | `policy log <name> [--denied] [--follow] [--since 10m]` | the proxy's decisions, with the fix command for each refusal; exit 4 for an unknown sandbox, 1 when it is not running |
+| `auth login <name> [--timeout 10m] [-- <cmd>...]` | run the agent's login (`kiro-cli login`) in a running sandbox and relay its browser callback from this machine's loopback, see [Kiro login](#kiro-login); exits with the login's code, 2 for an agent with no login command and no `-- <cmd>`, 1 when the callback port is taken on the host |
 | `image build <image>... [--force]` / `image ls` | build `proxy`, `base`, `claude`, `kiro`, `shell` |
 | `doctor [--pull]` | check prerequisites, including that `images.base` is present; `--pull` pulls it when absent; git is reported as optional (a warning, never a failure) |
 | `version` | build information |
@@ -135,7 +154,7 @@ git log main..podbox/claude-project/main                           # then review
 
 ## Configuration
 
-`~/.config/podbox/config.yaml` (`PODBOX_HOME` relocates config and state):
+`config.yaml` in podbox's config directory: `~/.config/podbox/` on Linux (or `$XDG_CONFIG_HOME/podbox/`), `~/Library/Application Support/podbox/` on macOS, `%AppData%\podbox\` on Windows. `PODBOX_HOME` relocates config and state (config then lives in `$PODBOX_HOME/config/`). A relative `ca_file` is resolved against that directory.
 
 ```yaml
 images:
@@ -175,6 +194,7 @@ Project files: `.podbox/policy.yaml` (allowlist layer, versioned) and `.sandboxi
 - Only HTTP(S) leaves the sandbox: no SSH git remotes, no databases.
 - The agent context tells Claude and Kiro that they are sandboxed and what to ask the human; it informs and enforces nothing, the proxy and the container do. It is verified by the e2e suite, not against a live Claude or Kiro session.
 - Clone mode: a podbox older than this release does not know the mode and would treat a clone sandbox as a shared one, mounting your project directory: remove clone sandboxes before downgrading. Clone mode on Windows (the `file://` URL of a drive path) is designed for but untested. A repository's submodules and LFS files are only what a plain `git clone` gives; each clone is a full copy of the repository's history on disk; a masked tracked file is empty in the clone, so a commit by the agent can record it as emptied; there is no way back to the host yet in this release.
+- `auth login` relays only callbacks to an `http` loopback address (`localhost`, `127.0.0.1`); a login that redirects to a custom scheme such as `kiro://` cannot be completed in a sandbox. When the login times out, its process may keep running in the sandbox until `podbox stop`. kiro-cli is closed source: the browser flow and its callbacks were checked by hand on kiro-cli 3.5.0 with Entra ID, not in CI.
 - macOS and Windows are designed for but not tested in CI.
 
 ## License
