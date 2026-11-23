@@ -14,12 +14,16 @@ type Agent struct {
 	Image        images.Kind
 	Command      []string
 	Experimental bool
+	// Login is the command podbox auth login runs; empty when the agent
+	// has none (its login then needs an explicit command).
+	Login []string
 }
 
 var table = map[string]Agent{
 	"claude": {Name: "claude", Image: images.Claude, Command: []string{"claude", "--dangerously-skip-permissions"}},
-	// --trust-all-tools confirmed on kiro-cli 3.3.0; login flow not yet verified end to end.
-	"kiro":  {Name: "kiro", Image: images.Kiro, Command: []string{"kiro-cli", "chat", "--trust-all-tools"}, Experimental: true},
+	// --trust-all-tools confirmed on kiro-cli 3.3.0; the browser login through
+	// an external IdP (Entra ID) relayed by podbox auth login on kiro-cli 3.5.0.
+	"kiro":  {Name: "kiro", Image: images.Kiro, Command: []string{"kiro-cli", "chat", "--trust-all-tools"}, Experimental: true, Login: []string{"kiro-cli", "login"}},
 	"shell": {Name: "shell", Image: images.Shell, Command: []string{"bash", "-l"}},
 }
 
