@@ -75,6 +75,28 @@ func TestEnsureBuildsBaseThenAgent(t *testing.T) {
 	}
 }
 
+// The base ships the URL opener; the kiro image pins and checks kiro-cli and
+// turns the browser flow on.
+func TestOpenerAndKiroImage(t *testing.T) {
+	rt := &fakeRT{exists: map[string]bool{}}
+	b := &Builder{RT: rt, Base: "docker.io/library/node:22-bookworm-slim"}
+	if _, err := b.Ensure(context.Background(), Kiro, false); err != nil {
+		t.Fatal(err)
+	}
+	base, kiro := rt.files[rt.built[0].Tag], rt.files[rt.built[1].Tag]
+	if !strings.Contains(base["podbox-open.sh"], "/tmp/podbox-open") || !strings.Contains(base["Containerfile"], "/usr/local/bin/xdg-open") {
+		t.Fatal("base lacks the opener")
+	}
+	for _, want := range []string{"sha256sum -c", "ARG KIRO_CLI_VERSION=", "/${KIRO_CLI_VERSION}/kirocli-", "DISPLAY=:0", "BROWSER=/usr/local/bin/podbox-open"} {
+		if !strings.Contains(kiro["Containerfile"], want) {
+			t.Errorf("kiro Containerfile lacks %q", want)
+		}
+	}
+	if strings.Contains(kiro["Containerfile"], "latest/kirocli-") {
+		t.Error("kiro-cli must be pinned, not latest")
+	}
+}
+
 func TestProxyContext(t *testing.T) {
 	if goruntime.GOOS != "linux" {
 		t.Skip("uses the test binary as proxy binary")

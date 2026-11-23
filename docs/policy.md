@@ -98,6 +98,8 @@ Common to every agent: `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org
 
 Observed Claude Code 2.1.325 startup traffic: `api.anthropic.com`, `platform.claude.com`, `raw.githubusercontent.com`. The login flow itself has not been observed.
 
+An organization that signs in to Kiro through an external identity provider needs that provider's host too, which no default can name: kiro-cli 3.5.0 fetches its OIDC discovery document and tokens from inside the sandbox (`login.microsoftonline.com` for Entra ID, observed). `podbox auth login` detects it from the portal's callback and prints the `podbox policy allow` command before relaying; it never adds a rule itself.
+
 ## Always refused
 
 Whatever the policy: `localhost`, loopback, link-local, cloud metadata (`169.254.169.254`, `fd00:ec2::254`), unspecified, multicast and reserved addresses. Private addresses need `allow_private`.

@@ -129,6 +129,18 @@ An export has to move data the agent controls into your repository. Podbox lets 
 - Warnings are advice, not a gate: symlinks, gitlinks and `.gitmodules`, `.gitattributes` (filters run programs on checkout), hook manager files, `.git` path components, podbox's own configuration, NUL-hiding files, case collisions and non-ASCII paths are reported in the text and JSON. podbox cannot tell a legitimate hook manager from a hostile one: read the diff before you check the branch out, build it or run its tests.
 - What it cannot verify: that the commits are harmless (they are the agent's code, and a later `git checkout`, build or test of them runs it on your machine); that a rewritten loose base object in the agent's store is absent (the host checks the base against its own repository, which is what matters); that a failure after the second fetch left nothing in your object store (unreachable objects can remain until `git gc`; a bundle refused earlier leaves none); submodule and LFS content. An agent that keeps committing during the export gets a refusal (HEAD moved), not a half export.
 
+## Login relay
+
+A program in a sandbox cannot open a browser. `xdg-open` (and `BROWSER` in the Kiro image) is `podbox-open`, a root-owned script that prints the URL for the human and appends it to `/tmp/podbox-open/urls`, a tmpfs of the agent container; it starts nothing. `podbox auth login <sandbox>` reads that file through `exec` and, for a URL whose `redirect_uri` is an `http` loopback address with a port, relays the browser's callback:
+
+- What listens: `127.0.0.1:<port>` and `[::1]:<port>` on the host, only while the login command runs (default limit 10 minutes), closed when it ends. A port another program holds on either address fails the login: that program would receive the callback.
+- What is relayed: `GET` only, on the callback path (`redirect_uri`'s path, any path but `/favicon.ico` when it has none), with a `Host` header naming the loopback port, which defeats DNS rebinding from a web page. One request at a time.
+- How: `curl --noproxy '*'` run in the agent container through `exec`, the URL given on stdin so no process listing shows it, to the same loopback address inside the sandbox. No port is published, no route is added and the proxy is not involved.
+- What the browser gets back: a redirect only to an `https` location the login answered with; otherwise a fixed page. The query (code, state) is never logged, printed or put in JSON.
+- What podbox does not do: open the URL on the host (it is chosen by code in the sandbox), change the `redirect_uri` (the login's own state and PKCE checks stay in force), add a policy rule (when the callback names an identity provider the policy refuses, the callback is held and the `podbox policy allow` command printed), or decrypt traffic.
+
+The resulting login lives in the agent home volume, as with every agent login: the agent can read and use it, and so can every sandbox of the same agent.
+
 ## Agent context
 
 At every `start`, podbox tells the agent that it is sandboxed and what to ask the human when a request is refused. The text is the same for every sandbox of an agent and names none, because the agent home volume is shared by all of them: it points to `$PODBOX_SANDBOX` and to `/run/podbox/policy.json`.
