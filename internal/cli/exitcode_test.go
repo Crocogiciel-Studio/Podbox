@@ -64,6 +64,8 @@ func TestExitCodes(t *testing.T) {
 		{"clone exists", fmt.Errorf("%w for s", sandbox.ErrCloneExists), output.ExitGeneric},
 		{"not a clone sandbox", fmt.Errorf("%w: s", sandbox.ErrNotClone), output.ExitUsage},
 		{"invalid export options", fmt.Errorf("%w: --as", sandbox.ErrBadExport), output.ExitUsage},
+		{"no login command", fmt.Errorf("%w for agent shell", sandbox.ErrNoLogin), output.ExitUsage},
+		{"callback port busy", fmt.Errorf("%w: port 3128", sandbox.ErrPortBusy), output.ExitGeneric},
 		{"branch exists", fmt.Errorf("%w: x", hostgit.ErrRefExists), output.ExitGeneric},
 		{"masked paths", fmt.Errorf("%w: .env", sandbox.ErrMaskedTouched), output.ExitGeneric},
 		{"history rewritten", fmt.Errorf("%w", sandbox.ErrHistory), output.ExitGeneric},
@@ -110,6 +112,9 @@ func TestCommandExitCodes(t *testing.T) {
 		{[]string{"policy", "allow", "s", "a*b"}, output.ExitUsage},
 		{[]string{"policy", "allow", "s", "example.com", "--scope", "nowhere"}, output.ExitUsage},
 		{[]string{"policy", "show", "s", "-o", "json"}, output.ExitOK},
+		{[]string{"auth", "login"}, output.ExitUsage},
+		{[]string{"auth", "login", "s", "kiro-cli"}, output.ExitUsage}, // a command needs --
+		{[]string{"auth", "login", "s", "--timeout", "soon"}, output.ExitUsage},
 	}
 	for _, c := range cases {
 		if got := run(c.args); got != c.want {
