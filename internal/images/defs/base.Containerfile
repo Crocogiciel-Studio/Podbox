@@ -21,6 +21,9 @@ RUN set -e; update-ca-certificates; \
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 COPY entrypoint.sh /usr/local/bin/podbox-entrypoint
 RUN chmod 0755 /usr/local/bin/podbox-entrypoint
+# No browser in a sandbox: xdg-open shows and records the URL (podbox auth login).
+COPY podbox-open.sh /usr/local/bin/podbox-open
+RUN chmod 0755 /usr/local/bin/podbox-open && ln -sf podbox-open /usr/local/bin/xdg-open
 USER agent
 WORKDIR /home/agent
 ENTRYPOINT ["/usr/local/bin/podbox-entrypoint"]

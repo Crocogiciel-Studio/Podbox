@@ -108,6 +108,7 @@ func (b *Builder) inputs(ctx context.Context, k Kind) (files map[string][]byte, 
 	case k == Base:
 		files["entrypoint.sh"] = def("entrypoint.sh")
 		files["apt-install.sh"] = def("apt-install.sh")
+		files["podbox-open.sh"] = def("podbox-open.sh")
 		files["ca/.keep"] = nil
 		if b.CAFile != "" {
 			ca, err := os.ReadFile(b.CAFile)
